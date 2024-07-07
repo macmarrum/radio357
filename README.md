@@ -19,9 +19,9 @@ Email oraz hasło do logowania na https://konto.radio357.pl muszą być podane w
 lub\
 `~/.config/macmarrum357.json` – na Unix.
 
-W tym samym pliku można podać ścieżkę do **mpv** oraz opcje programu:
+W tym samym pliku można podać ścieżkę do **mpv** oraz opcje programu:\
 `"mpv_command" : "C:\\Program Files\\mpv\\mpv.exe"`\
-`"mpv_options": ["--force-window=immediate"]`
+`"mpv_options": ["--force-window=immediate"]`\
 Gdy brak `mpv_command`, **macmarrum357** szuka **mpv** w `PATH`.
 
 ### Wymagania systemowe
