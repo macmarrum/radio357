@@ -16,7 +16,7 @@ from requests import codes
 
 me = Path(__file__)
 
-__version__ = '2024.07.11'
+__version__ = '2024.07.12'
 
 logging.basicConfig()
 macmarrum_log = logging.getLogger(me.stem)
@@ -66,6 +66,9 @@ class c:
     PASSWORD = 'password'
     USER_AGENT = 'User-Agent'
     COOKIE = 'Cookie'
+    R357_PID = 'r357_pid'
+    R357_PID_EXPIRES = 'r357_pid_expires'
+    R357_PID_EXPIRES_ = 'r357_pid_expires_'
     REFRESH_TOKEN = 'refresh_token'
     REFRESH_TOKEN_EXPIRES = 'refresh_token_expires'
     ACCESS_TOKEN = 'accessToken'
@@ -109,7 +112,9 @@ class Macmarrum357:
     def load_config(self):
         if not self.macmarrum357_json_path.exists():
             with self.macmarrum357_json_path.open('w') as fo:
-                conf = {c.EMAIL: '', c.PASSWORD: '', c.MPV_COMMAND: 'mpv', c.MPV_OPTIONS: ['--force-window=immediate']}
+                conf = {c.EMAIL: '', c.PASSWORD: ''}
+                if os.name == 'nt':
+                    conf |= {c.MPV_COMMAND: 'mpv', c.MPV_OPTIONS: ['--force-window=immediate']}
                 json.dump(conf, fo, indent=2)
         else:
             with self.macmarrum357_json_path.open('r') as fi:
@@ -145,12 +150,19 @@ class Macmarrum357:
             json.dump(self.conf, fo, indent=2)
 
     def run(self):
+        # ensure r357_pid
+        r357_pid = self.conf.get(c.R357_PID)
+        r357_pid_expires = self.conf.get(c.R357_PID_EXPIRES)
+        if not r357_pid or not r357_pid_expires or time.time() > r357_pid_expires:
+            self.init_r357()
+            if self.conf[c.R357_PID] != r357_pid or self.conf[c.R357_PID_EXPIRES] != r357_pid_expires:
+                self.dump_json()
         # query account to see if the token works
         resp = self.query_account()
         if resp.status_code == codes.unauthorized:
-            refresh_token = self.conf[c.REFRESH_TOKEN]
-            token_created = self.conf[c.TOKEN_CREATED]
-            if refresh_token and token_created and datetime.now(timezone.utc) < datetime.fromisoformat(token_created) + self.TOKEN_VALIDITY_DELTA:
+            refresh_token = self.conf.get(c.REFRESH_TOKEN)
+            # try to refresh the token before falling back to login
+            if refresh_token:
                 resp = self.refresh_token()
                 if resp.status_code == codes.ok:
                     self.update_tokens_from_resp(resp)
@@ -165,14 +177,33 @@ class Macmarrum357:
             # query account to see if the new token works
             resp = self.query_account()
             assert resp.status_code == codes.ok, f"{resp.status_code} {resp.text}"
+        else:
+            # some other error (unexpected)
+            resp.raise_for_status()
         sleep_if_requested()
         self.run_mpv()
 
+    def init_r357(self):
+        macmarrum_log.debug('INIT r357_pid')
+        url = 'https://checkout.radio357.pl/user/init/'
+        resp = self.session.get(url, headers={c.USER_AGENT: self.USER_AGENT})
+        assert resp.status_code == codes.ok, f"{resp.status_code} {resp.text}"
+        r357_pid = None
+        for cookie in iter(resp.cookies):
+            macmarrum_log.debug(f"{c.COOKIE} {[cookie.name, cookie.value, cookie.expires, cookie.domain, cookie.path]}")
+            if cookie.name == c.R357_PID:
+                r357_pid = cookie.value
+                self.conf[c.R357_PID] = cookie.value
+                self.conf[c.R357_PID_EXPIRES] = cookie.expires
+                self.conf[c.R357_PID_EXPIRES_] = datetime.fromtimestamp(cookie.expires).astimezone().isoformat()
+                break
+        assert r357_pid, f"{c.R357_PID} is missing. This is unexpected."
+
     def query_account(self):
         # This is what the web app usually does, before playing the live stream
-        macmarrum_log.debug('QUERY account data')
+        macmarrum_log.debug('QUERY account')
         url = 'https://auth.r357.eu/api/account'
-        token = self.conf[c.TOKEN]
+        token = self.conf.get(c.TOKEN)
         headers = {c.USER_AGENT: self.USER_AGENT, 'Authorization': f"Bearer {token}"}
         return self.session.get(url, headers=headers)
 
@@ -255,8 +286,10 @@ class Macmarrum357:
         token = self.conf[c.TOKEN]
         token_expires = self.calc_token_expires()
         refresh_token = self.conf[c.REFRESH_TOKEN]
+        r357_pid = self.conf[c.R357_PID]
         return (f"{c.TOKEN}={token}; {c.TOKEN_EXPIRES}={token_expires}; "
-                f"{c.REFRESH_TOKEN}={refresh_token}; {c.REFRESH_TOKEN_EXPIRES}={token_expires}")
+                f"{c.REFRESH_TOKEN}={refresh_token}; {c.REFRESH_TOKEN_EXPIRES}={token_expires}; "
+                f"{c.R357_PID}={r357_pid}")
 
     def calc_token_expires(self) -> int:
         token_created = self.conf[c.TOKEN_CREATED]
