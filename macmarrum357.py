@@ -6,17 +6,20 @@ import http.client
 import json
 import logging
 import os
+import pickle
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from http.cookiejar import MozillaCookieJar, CookieJar, Cookie
 from pathlib import Path
 
 import requests
 from requests import codes
+from requests.cookies import RequestsCookieJar
 
 me = Path(__file__)
 
-__version__ = '2024.07.12'
+__version__ = '2024.07.13'
 
 logging.basicConfig()
 macmarrum_log = logging.getLogger(me.stem)
@@ -61,20 +64,27 @@ def sleep_if_requested():
         time.sleep(sleep_sec)
 
 
+def mk_mozilla_cookies_csv_list(cookiejar: RequestsCookieJar | CookieJar, sep: str = ' ', end: str = None):
+    lst = []
+    for cookie in cookiejar:
+        expires = datetime.fromtimestamp(cookie.expires).astimezone().isoformat()
+        lst.append(f"{cookie.domain}{sep}{cookie.domain_initial_dot}{sep}{cookie.path}{sep}{cookie.secure}{sep}{expires}{sep}{cookie.name}{sep}{cookie.value}")
+    if end is not None:
+        return end.join(lst)
+    else:
+        return lst
+
+
 class c:
     EMAIL = 'email'
     PASSWORD = 'password'
     USER_AGENT = 'User-Agent'
-    COOKIE = 'Cookie'
     R357_PID = 'r357_pid'
-    R357_PID_EXPIRES = 'r357_pid_expires'
-    R357_PID_EXPIRES_ = 'r357_pid_expires_'
     REFRESH_TOKEN = 'refresh_token'
     REFRESH_TOKEN_EXPIRES = 'refresh_token_expires'
     ACCESS_TOKEN = 'accessToken'
     REFRESHTOKEN = 'refreshToken'
     TOKEN = 'token'
-    TOKEN_CREATED = 'token_created'
     TOKEN_EXPIRES = 'token_expires'
     MPV_COMMAND = 'mpv_command'
     MPV_OPTIONS = 'mpv_options'
@@ -90,24 +100,31 @@ class Macmarrum357:
     or
     - ~/.config/macmarrum357.json – on Unix
 
-    Path to mpv and mpv_args can be specified in the same file, e.g.
-    "mpv_path": "c:\\Program Files\\mpv\\mpv.exe"
-    "mpv_args": ["--force-window=immediate"]
-    When mpv_path is missing, macmarrum357 looks for mpv in PATH.
+    Path to mpv and mpv options can be specified in the same file, e.g.
+    "mpv_command": "c:\\Program Files\\mpv\\mpv.exe"
+    "mpv_options": ["--force-window=immediate"]
+    When mpv_command is missing, macmarrum357 looks for mpv in PATH.
 
-    Passes all command-line arguments to mpv, so that macmarrum357 can be used as a drop-in replacement for mpv,
+    Sleeps for SECONDS before starting mpv, if `--sleep SECONDS` arguments are found in the command line.
+
+    Passes all other command-line arguments to mpv, so that macmarrum357 can be used as a drop-in replacement for mpv,
     e.g. adding `--end=60:00 --mute=yes --stream-record=output.aac`
     will quietly record 60 minutes of the stream to output.aac
     """
-    STREAM = 'http://stream.radio357.pl/'
+    STREAM = 'https://stream.radio357.pl/'
     USER_AGENT = 'macmarrum/357'
     TOKEN_VALIDITY_DELTA = timedelta(minutes=60)
-    macmarrum357_json_path = get_appdata() / 'macmarrum357.json'
+    macmarrum357_path = get_appdata() / 'macmarrum357'
+    macmarrum357_path.mkdir(exist_ok=True)
+    macmarrum357_json_path = macmarrum357_path / 'config.json'
+    macmarrum357_cookies_pickle_path = macmarrum357_path / 'cookies.pickle'
+    macmarrum357_cookies_txt_path = macmarrum357_path / 'cookies.txt'
 
     def __init__(self):
         self.conf = {}
         self.load_config()
         self.session = requests.Session()
+        self.load_cookies()
 
     def load_config(self):
         if not self.macmarrum357_json_path.exists():
@@ -119,96 +136,108 @@ class Macmarrum357:
         else:
             with self.macmarrum357_json_path.open('r') as fi:
                 conf = json.load(fi)
-                macmarrum_log.debug(f"READ {self.macmarrum357_json_path.name} {conf}")
-
+                macmarrum_log.debug(f"LOAD {self.macmarrum357_json_path.name} {conf}")
         assert conf.get(c.EMAIL) and conf.get(c.PASSWORD), f"{self.macmarrum357_json_path} is missing email and/or password values"
         self.conf = conf
 
-    def login_and_update_tokens_and_dump_json(self):
-        macmarrum_log.debug('LOGIN to get new tokens')
-        url = 'https://auth.r357.eu/api/auth/login'
-        credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
-        creds_with_hidden_password = credentials.copy()
-        creds_with_hidden_password[c.PASSWORD] = '*' * len(credentials[c.PASSWORD])
-        headers = {c.USER_AGENT: self.USER_AGENT}
-        resp = self.session.post(url, headers=headers, json=credentials)
-        status_code = resp.status_code
-        assert status_code == codes.ok, f"{status_code} {resp.text}"
-        self.update_tokens_from_resp(resp)
-        self.dump_json()
-
-    def update_tokens_from_resp(self, resp):
-        macmarrum_log.debug(f"{resp.status_code} {resp.text}")
-        d = resp.json()
-        self.conf[c.TOKEN] = d[c.ACCESS_TOKEN]
-        self.conf[c.TOKEN_CREATED] = datetime.now(timezone.utc).astimezone().replace(microsecond=0).isoformat()
-        self.conf[c.REFRESH_TOKEN] = d[c.REFRESHTOKEN]
-
-    def dump_json(self):
-        macmarrum_log.debug(f"WRITE {self.macmarrum357_json_path.name} {self.conf}")
-        with self.macmarrum357_json_path.open('w') as fo:
-            json.dump(self.conf, fo, indent=2)
+    def load_cookies(self):
+        try:
+            with self.macmarrum357_cookies_pickle_path.open('rb') as fi:
+                cj: RequestsCookieJar = pickle.load(fi)
+                for cookie_line in mk_mozilla_cookies_csv_list(cj):
+                    macmarrum_log.debug(f"LOAD {self.macmarrum357_cookies_pickle_path.name} {cookie_line}")
+                self.session.cookies.update(cj)
+        except FileNotFoundError:
+            pass
 
     def run(self):
         # ensure r357_pid
-        r357_pid = self.conf.get(c.R357_PID)
-        r357_pid_expires = self.conf.get(c.R357_PID_EXPIRES)
-        if not r357_pid or not r357_pid_expires or time.time() > r357_pid_expires:
+        r357_pid = self.get_cookie(c.R357_PID)
+        if not r357_pid.value or r357_pid.is_expired():
             self.init_r357()
-            if self.conf[c.R357_PID] != r357_pid or self.conf[c.R357_PID_EXPIRES] != r357_pid_expires:
-                self.dump_json()
-        # query account to see if the token works
-        resp = self.query_account()
-        if resp.status_code == codes.unauthorized:
-            refresh_token = self.conf.get(c.REFRESH_TOKEN)
-            # try to refresh the token before falling back to login
-            if refresh_token:
-                resp = self.refresh_token()
-                if resp.status_code == codes.ok:
-                    self.update_tokens_from_resp(resp)
-                    self.dump_json()
-                elif resp.status_code == codes.unauthorized:
-                    macmarrum_log.debug(f"{resp.status_code} {resp.text}")
-                    self.login_and_update_tokens_and_dump_json()
-                else:
-                    resp.raise_for_status()
-            else:
-                self.login_and_update_tokens_and_dump_json()
-            # query account to see if the new token works
+            r357_pid_new = self.get_cookie(c.R357_PID)
+            if r357_pid_new.value != r357_pid.value or r357_pid_new.expires != r357_pid.expires:
+                self.dump_cookies_pickle()
+                self.save_cookies_txt()
+        token = self.get_cookie(c.TOKEN)
+        if token.value and not token.is_expired():
+            # query account to see if the token works
             resp = self.query_account()
-            assert resp.status_code == codes.ok, f"{resp.status_code} {resp.text}"
+            if resp.status_code == codes.unauthorized:
+                self.refresh_or_login_and_query_to_verify()
+            else:
+                # some other error (unexpected)
+                resp.raise_for_status()
         else:
-            # some other error (unexpected)
-            resp.raise_for_status()
+            self.refresh_or_login_and_query_to_verify()
         sleep_if_requested()
         self.run_mpv()
+
+    def get_cookie(self, name):
+        for cookie in self.session.cookies:
+            if cookie.name == name:
+                return cookie
+        return Cookie(None, name, None, None, False, '', False, False,
+                      '', False, False, None, False, None, None, {}, False)
 
     def init_r357(self):
         macmarrum_log.debug('INIT r357_pid')
         url = 'https://checkout.radio357.pl/user/init/'
         resp = self.session.get(url, headers={c.USER_AGENT: self.USER_AGENT})
         assert resp.status_code == codes.ok, f"{resp.status_code} {resp.text}"
-        r357_pid = None
-        for cookie in iter(resp.cookies):
-            macmarrum_log.debug(f"{c.COOKIE} {[cookie.name, cookie.value, cookie.expires, cookie.domain, cookie.path]}")
-            if cookie.name == c.R357_PID:
-                r357_pid = cookie.value
-                self.conf[c.R357_PID] = cookie.value
-                self.conf[c.R357_PID_EXPIRES] = cookie.expires
-                self.conf[c.R357_PID_EXPIRES_] = datetime.fromtimestamp(cookie.expires).astimezone().isoformat()
-                break
-        assert r357_pid, f"{c.R357_PID} is missing. This is unexpected."
+        assert self.session.cookies.get(c.R357_PID), f"{c.R357_PID} is missing. This is unexpected."
+
+    def dump_cookies_pickle(self):
+        cj = self.session.cookies.copy()
+        cj.clear_session_cookies()
+        cj.clear_expired_cookies()
+        for cookie_line in mk_mozilla_cookies_csv_list(cj):
+            macmarrum_log.debug(f"WRITE {self.macmarrum357_cookies_pickle_path.name} {cookie_line}")
+        with self.macmarrum357_cookies_pickle_path.open('wb') as fo:
+            pickle.dump(cj, fo)
+
+    def save_cookies_txt(self):
+        mcj = MozillaCookieJar()
+        for cookie in self.session.cookies:
+            mcj.set_cookie(cookie)
+        mcj.clear_session_cookies()
+        mcj.clear_expired_cookies()
+        for cookie_line in mk_mozilla_cookies_csv_list(mcj):
+            macmarrum_log.debug(f"WRITE {self.macmarrum357_cookies_txt_path.name} {cookie_line}")
+        mcj.save(self.macmarrum357_cookies_txt_path.as_posix())
 
     def query_account(self):
         # This is what the web app usually does, before playing the live stream
         macmarrum_log.debug('QUERY account')
         url = 'https://auth.r357.eu/api/account'
-        token = self.conf.get(c.TOKEN)
+        token = self.session.cookies.get(c.TOKEN)
         headers = {c.USER_AGENT: self.USER_AGENT, 'Authorization': f"Bearer {token}"}
         return self.session.get(url, headers=headers)
 
+    def refresh_or_login_and_query_to_verify(self):
+        refresh_token = self.get_cookie(c.REFRESH_TOKEN)
+        # try to refresh the token before falling back to login
+        # TODO observe to decide whether to skip the refresh attempt when token's expired
+        if refresh_token.value:
+            resp = self.refresh_token()
+            if resp.status_code == codes.ok:
+                self.update_tokens_from_resp(resp)
+                self.dump_cookies_pickle()
+                self.save_cookies_txt()
+            elif resp.status_code == codes.unauthorized:
+                macmarrum_log.debug(f"{resp.status_code} {resp.text}")
+                self.login_and_update_tokens_and_persist_cookies()
+            else:
+                # some other error (unexpected)
+                resp.raise_for_status()
+        else:
+            self.login_and_update_tokens_and_persist_cookies()
+        # query account to see if the new token works
+        resp = self.query_account()
+        assert resp.status_code == codes.ok, f"{resp.status_code} {resp.text}"
+
     def refresh_token(self):
-        '''
+        _ = '''
         Based on https://radio357.pl/wp-content/plugins/r357api/public/r357api.js?_v=1720644011&ver=6.5.5
       getUser: (b, a = !1) => {
         d.call({
@@ -260,8 +289,39 @@ class Macmarrum357:
         '''
         macmarrum_log.debug('REFRESH token')
         url = 'https://auth.r357.eu/api/refresh'
-        refresh_token = self.conf[c.REFRESH_TOKEN]
+        refresh_token = self.session.cookies.get(c.REFRESH_TOKEN)
         return self.session.post(url, headers={c.USER_AGENT: self.USER_AGENT}, json={c.REFRESHTOKEN: refresh_token})
+
+    def update_tokens_from_resp(self, resp):
+        macmarrum_log.debug(f"{resp.status_code} {resp.text}")
+        d = resp.json()
+        expires = int((datetime.now().replace(microsecond=0) + self.TOKEN_VALIDITY_DELTA).timestamp())
+        cookie = Cookie(0, c.TOKEN, d[c.ACCESS_TOKEN], None, False, '.radio357.pl', True, True,
+                        '/', True, False, expires, False, None, None, {}, False)
+        self.session.cookies.set_cookie(cookie)
+        cookie = Cookie(0, c.TOKEN_EXPIRES, f"{expires}000", None, False, '.radio357.pl', True, True,
+                        '/', True, False, expires, False, None, None, {}, False)
+        self.session.cookies.set_cookie(cookie)
+        cookie = Cookie(0, c.REFRESH_TOKEN, d[c.REFRESHTOKEN], None, False, '.radio357.pl', True, True,
+                        '/', True, False, expires, False, None, None, {}, False)
+        self.session.cookies.set_cookie(cookie)
+        cookie = Cookie(0, c.REFRESH_TOKEN_EXPIRES, f"{expires}000", None, False, '.radio357.pl', True, True,
+                        '/', True, False, expires, False, None, None, {}, False)
+        self.session.cookies.set_cookie(cookie)
+
+    def login_and_update_tokens_and_persist_cookies(self):
+        macmarrum_log.debug('LOGIN to get new tokens')
+        url = 'https://auth.r357.eu/api/auth/login'
+        credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
+        creds_with_hidden_password = credentials.copy()
+        creds_with_hidden_password[c.PASSWORD] = '*' * len(credentials[c.PASSWORD])
+        headers = {c.USER_AGENT: self.USER_AGENT}
+        resp = self.session.post(url, headers=headers, json=credentials)
+        status_code = resp.status_code
+        assert status_code == codes.ok, f"{status_code} {resp.text}"
+        self.update_tokens_from_resp(resp)
+        self.dump_cookies_pickle()
+        self.save_cookies_txt()
 
     def run_mpv(self):
         mpv = self.conf.get(c.MPV_COMMAND, 'mpv')
@@ -269,7 +329,8 @@ class Macmarrum357:
         args = [Path(mpv).name,
                 self.STREAM,
                 f"--user-agent={self.USER_AGENT}",
-                f"--http-header-fields='{c.COOKIE}: {self.mk_cookie()}'",
+                '--cookies=yes',
+                f"--cookies-file={self.macmarrum357_cookies_txt_path}",
                 # add any args specified in macmarrum357.json
                 *mpv_args,
                 # add any args passed on the command line
@@ -278,23 +339,9 @@ class Macmarrum357:
         macmarrum_log.debug(f"{mpv} {args}")
         try:
             os.execvp(mpv, args)
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             print(f"** 'mpv_path' might be missing or incorrect in {self.macmarrum357_json_path}")
             raise
-
-    def mk_cookie(self):
-        token = self.conf[c.TOKEN]
-        token_expires = self.calc_token_expires()
-        refresh_token = self.conf[c.REFRESH_TOKEN]
-        r357_pid = self.conf[c.R357_PID]
-        return (f"{c.TOKEN}={token}; {c.TOKEN_EXPIRES}={token_expires}; "
-                f"{c.REFRESH_TOKEN}={refresh_token}; {c.REFRESH_TOKEN_EXPIRES}={token_expires}; "
-                f"{c.R357_PID}={r357_pid}")
-
-    def calc_token_expires(self) -> int:
-        token_created = self.conf[c.TOKEN_CREATED]
-        expiry_dt = datetime.fromisoformat(token_created) + self.TOKEN_VALIDITY_DELTA
-        return int(expiry_dt.timestamp()) * 1000
 
 
 if __name__ == '__main__':
