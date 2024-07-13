@@ -6,6 +6,8 @@ Odtwarza Radio 357 na żywo, jako zalogowany użytkownik, z pominięciem komunik
 
 Loguje użytkownika, pobiera ciasteczka i używa ich do odtwarzania strumienia przez **mpv**.
 
+Czeka określoną ilość sekund przed włączeniem **mpv**, jeżeli `--sleep SECONDS` jest podane w wierszu poleceń.
+
 Przekazuje wszystkie argumenty wiersza polecenia do **mpv**, 
 żeby **macmarrum357** mógł być używany zamiennie z **mpv**.\
 Np. dodanie po `python macmarrum357.py`\
