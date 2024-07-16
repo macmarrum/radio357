@@ -77,13 +77,15 @@ def mk_mozilla_cookie_csv(cookie: Cookie, sep: str = ' '):
 
 
 def mk_filename(start: datetime, end: datetime, duration: timedelta, file_num: int, count: int):
-    return f"{start.strftime('%Y-%m-%d,%a_%H,%M')}.aac"
+    return f"{start.strftime('%Y-%m-%d,%a_%H')}.aac"
 
 
 class c:
     EMAIL = 'email'
     PASSWORD = 'password'
     USER_AGENT = 'User-Agent'
+    AUTHORIZATION = 'Authorization'
+    BEARER = 'Bearer'
     R357_PID = 'r357_pid'
     REFRESH_TOKEN = 'refresh_token'
     REFRESH_TOKEN_EXPIRES = 'refresh_token_expires'
@@ -231,7 +233,7 @@ class Macmarrum357:
         macmarrum_log.debug('QUERY account')
         url = 'https://auth.r357.eu/api/account'
         token = self.session.cookies.get(c.TOKEN)
-        headers = {c.USER_AGENT: self.USER_AGENT, 'Authorization': f"Bearer {token}"}
+        headers = {c.USER_AGENT: self.USER_AGENT, c.AUTHORIZATION: f"{c.BEARER} {token}"}
         return self.session.get(url, headers=headers)
 
     def refresh_or_login_and_query_to_verify(self):
@@ -310,8 +312,10 @@ class Macmarrum357:
         '''
         macmarrum_log.debug('REFRESH token')
         url = 'https://auth.r357.eu/api/refresh'
+        token = self.session.cookies.get(c.TOKEN)
         refresh_token = self.session.cookies.get(c.REFRESH_TOKEN)
-        return self.session.post(url, headers={c.USER_AGENT: self.USER_AGENT}, json={c.REFRESHTOKEN: refresh_token})
+        headers = {c.USER_AGENT: self.USER_AGENT, c.AUTHORIZATION: f"{c.BEARER} {token}"}
+        return self.session.post(url, headers=headers, json={c.REFRESHTOKEN: refresh_token})
 
     def update_and_persist_tokens_from_resp(self, resp):
         macmarrum_log.debug(f"{resp.status_code} {resp.text}")
@@ -504,7 +508,7 @@ class Macmarrum357:
 
         name = 'Tread-periodic_token_refresh'
         macmarrum_log.debug(f"START {name}")
-        Thread(target=periodic_token_refresh, name=name).start()
+        Thread(target=periodic_token_refresh, name=name, daemon=True).start()
 
 
 if __name__ == '__main__':
