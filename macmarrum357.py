@@ -9,14 +9,14 @@ import os
 import pickle
 import subprocess
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from http.cookiejar import MozillaCookieJar, CookieJar, Cookie
 from pathlib import Path
-from typing import Callable, Sequence, Iterator
+from threading import Thread
+from time import sleep, time
+from typing import Callable, Sequence
 
 import requests
-from requests import codes
 from requests.cookies import RequestsCookieJar
 
 me = Path(__file__)
@@ -63,7 +63,7 @@ def sleep_if_requested():
         del sys.argv[k]
     if sleep_sec:
         macmarrum_log.info(f"sleeping for {sleep_sec} seconds")
-        time.sleep(sleep_sec)
+        sleep(sleep_sec)
 
 
 def iter_mozilla_cookies_as_csv(cookiejar: RequestsCookieJar | CookieJar, sep: str = ' '):
@@ -77,20 +77,7 @@ def mk_mozilla_cookie_csv(cookie: Cookie, sep: str = ' '):
 
 
 def mk_filename(start: datetime, end: datetime, duration: timedelta, file_num: int, count: int):
-    return f"{start.strftime('%Y-%m-%d,%a_%H-%M')}.aac"
-
-
-def play_recording(path: Path, *options):
-    args = [
-        'mpv',
-        '--fs=no',
-        '--speed=1.01',
-        '--framedrop=no',
-        *options,
-        f"appending://{path}"
-    ]
-    macmarrum_log.debug(f"PLAY RECORDING {args}")
-    subprocess.Popen(args)
+    return f"{start.strftime('%Y-%m-%d,%a_%H,%M')}.aac"
 
 
 class c:
@@ -128,6 +115,8 @@ class Macmarrum357:
     Passes all other command-line arguments to mpv, so that macmarrum357 can be used as a drop-in replacement for mpv,
     e.g. adding `--end=60:00 --mute=yes --stream-record=output.aac`
     will quietly record 60 minutes of the stream to output.aac
+
+    Alternatively, `--record='{"output_dir": "/path/to/directory", "switch_file_at":"[6, 9, 12]"}'
     """
     STREAM = 'https://stream.radio357.pl/'
     USER_AGENT = 'macmarrum/357'
@@ -138,14 +127,15 @@ class Macmarrum357:
     macmarrum357_json_path = macmarrum357_path / 'config.json'
     macmarrum357_cookies_pickle_path = macmarrum357_path / 'cookies.pickle'
     macmarrum357_cookies_txt_path = macmarrum357_path / 'cookies.txt'
+    hours = list(range(0, 23))
 
     def __init__(self):
         self.conf = {}
         self.load_config()
         self.session = requests.Session()
-        # TODO consider to get new r357_pid and tokens with every run
         self.load_cookies()
         self.is_cookies_changed = False
+        self.record_hour = None
 
     def load_config(self):
         if not self.macmarrum357_json_path.exists():
@@ -158,7 +148,8 @@ class Macmarrum357:
             with self.macmarrum357_json_path.open('r') as fi:
                 conf = json.load(fi)
                 macmarrum_log.debug(f"LOAD {self.macmarrum357_json_path.name} {conf}")
-        assert conf.get(c.EMAIL) and conf.get(c.PASSWORD), f"{self.macmarrum357_json_path} is missing email and/or password values"
+        assert conf.get(c.EMAIL) and conf.get(
+            c.PASSWORD), f"{self.macmarrum357_json_path} is missing email and/or password values"
         self.conf = conf
 
     def load_cookies(self):
@@ -188,21 +179,19 @@ class Macmarrum357:
         if token.value and not token.is_expired():
             # query account to see if the token works
             resp = self.query_account()
-            if resp.status_code == codes.unauthorized:
-                self.refresh_or_login_and_query_to_verify()
+            if resp.status_code == 401:
+                resp = self.refresh_or_login_and_query_to_verify()
+                assert resp.status_code == 200, f"{resp.status_code} {resp.text}"
             else:
                 # some other error (unexpected)
                 resp.raise_for_status()
         else:
-            self.refresh_or_login_and_query_to_verify()
+            resp = self.refresh_or_login_and_query_to_verify()
+            assert resp.status_code == 200, f"{resp.status_code} {resp.text}"
         if self.is_cookies_changed:
             self.dump_cookies_pickle()
             self.save_cookies_txt()
             self.is_cookies_changed = False
-            # TODO observe if it helps to wait
-            #  in hope for the cookie to be propagated among r357's streaming servers
-            # time.sleep(2)
-            #  it doesn't help
 
     def get_cookie(self, name):
         for cookie in self.session.cookies:
@@ -215,7 +204,7 @@ class Macmarrum357:
         macmarrum_log.debug('INIT r357_pid')
         url = 'https://checkout.radio357.pl/user/init/'
         resp = self.session.get(url, headers={c.USER_AGENT: self.USER_AGENT})
-        assert resp.status_code == codes.ok, f"{resp.status_code} {resp.text}"
+        assert resp.status_code == 200, f"{resp.status_code} {resp.text}"
         assert self.session.cookies.get(c.R357_PID), f"{c.R357_PID} is missing. This is unexpected."
 
     def dump_cookies_pickle(self):
@@ -251,19 +240,22 @@ class Macmarrum357:
         # TODO observe to decide whether to skip the refresh attempt when token's expired
         if refresh_token.value and not refresh_token.is_expired():
             resp = self.refresh_token()
-            if resp.status_code == codes.ok:
-                self.update_tokens_from_resp(resp)
-            elif resp.status_code == codes.unauthorized:
+            if resp.status_code == 200:
+                self.update_and_persist_tokens_from_resp(resp)
+            elif resp.status_code == 401:
                 macmarrum_log.debug(f"{resp.status_code} {resp.text}")
-                self.login_and_update_tokens_and_persist_cookies()
+                resp = self.login_and_update_tokens_and_persist_cookies()
+                if resp.status_code == 200:
+                    self.update_and_persist_tokens_from_resp(resp)
             else:
                 # some other error (unexpected)
                 resp.raise_for_status()
         else:
-            self.login_and_update_tokens_and_persist_cookies()
+            resp = self.login_and_update_tokens_and_persist_cookies()
+            if resp.status_code == 200:
+                self.update_and_persist_tokens_from_resp(resp)
         # query account to see if the new token works
-        resp = self.query_account()
-        assert resp.status_code == codes.ok, f"{resp.status_code} {resp.text}"
+        return self.query_account()
 
     def refresh_token(self):
         _ = '''
@@ -321,7 +313,7 @@ class Macmarrum357:
         refresh_token = self.session.cookies.get(c.REFRESH_TOKEN)
         return self.session.post(url, headers={c.USER_AGENT: self.USER_AGENT}, json={c.REFRESHTOKEN: refresh_token})
 
-    def update_tokens_from_resp(self, resp):
+    def update_and_persist_tokens_from_resp(self, resp):
         macmarrum_log.debug(f"{resp.status_code} {resp.text}")
         d = resp.json()
         expires = int((datetime.now().replace(microsecond=0) + self.TOKEN_VALIDITY_DELTA).timestamp())
@@ -337,17 +329,16 @@ class Macmarrum357:
         cookie = Cookie(0, c.REFRESH_TOKEN_EXPIRES, f"{expires}000", None, False, '.radio357.pl', True, True,
                         '/', True, False, expires, False, None, None, {}, False)
         self.session.cookies.set_cookie(cookie)
-        self.is_cookies_changed = True
+        self.dump_cookies_pickle()
+        self.save_cookies_txt()
+        self.is_cookies_changed = False
 
     def login_and_update_tokens_and_persist_cookies(self):
         macmarrum_log.debug('LOGIN to get new tokens')
         url = 'https://auth.r357.eu/api/auth/login'
         credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
         headers = {c.USER_AGENT: self.USER_AGENT}
-        resp = self.session.post(url, headers=headers, json=credentials)
-        status_code = resp.status_code
-        assert status_code == codes.ok, f"{status_code} {resp.text}"
-        self.update_tokens_from_resp(resp)
+        return self.session.post(url, headers=headers, json=credentials)
 
     def run_mpv(self):
         mpv = self.conf.get(c.MPV_COMMAND, 'mpv')
@@ -369,29 +360,61 @@ class Macmarrum357:
             print(f"** 'mpv_path' might be missing or incorrect in {self.macmarrum357_json_path}")
             raise
 
-    def record(self, output_dir: str | Path, filename: str | Callable = None, duration: timedelta | Sequence[timedelta] | None = timedelta(minutes=60), count=1,
-               player: str | Callable | None = None):
-        self.ensure_login_done()
+    def record(self, args_as_json: str):
+        macmarrum_log.debug(f"{args_as_json=}")
+        record_args = json.loads(args_as_json)
+        macmarrum_log.debug(f"{record_args=}")
+        self.start_recording(**record_args)
+
+    def start_recording(self, output_dir: str | Path, filename: str | Callable = None,
+                        switch_file_at: Sequence[str | int] = ('*',), count=None, player: str | Callable | None = None):
+        """
+        :param output_dir:
+        :param filename:
+        :param switch_file_at: a sequence of time spec 'HH:MM:SS', e.g. ('6:00', '9:00', '12:00'), the last one meaning exit
+        :param count: number of hourly '*' files to be produced; None means from now till midnight
+        :param player:
+        :return:
+        """
         if filename is None:
             filename = mk_filename
-        if isinstance(duration, Sequence):
-            count = len(duration)
+        switch_file_at_list = []
+        is_every_hour_found = any(spec.startswith('*') for spec in switch_file_at)
+        if is_every_hour_found:
+            assert len(switch_file_at) == 1
+            e = self.parse_switch_file_at_spec(switch_file_at[0], is_every_hour_found)
+            switch_file_at_list.append(e)
+            if count is None:
+                count = 24 - datetime.now().hour
+        else:
+            for spec in switch_file_at:
+                e = self.parse_switch_file_at_spec(spec, is_every_hour_found)
+                switch_file_at_list.append(e)
+            count = len(switch_file_at_list)
 
-        def mk_num_duration_gen() -> Iterator[tuple[int, timedelta]]:
-            if isinstance(duration, Sequence):
-                yield from enumerate(duration, start=1)
-            else:
+        def mk_switch_file_at_gen():
+            if is_every_hour_found:
+                h, m, s = switch_file_at_list[0]
                 for i in range(1, count + 1):
-                    yield i, duration
+                    if self.record_hour is None:
+                        self.record_hour = datetime.now(timezone.utc).astimezone().hour
+                    h = 0 if self.record_hour == 23 else self.record_hour + 1
+                    self.record_hour = h
+                    yield i, *self.calc_start_end_duration(h, m, s)
+            else:
+                for i, h, m, s in enumerate(switch_file_at_list, start=1):
+                    yield i, *self.calc_start_end_duration(h, m, s)
+            return None, None, None, None
 
-        num_duration_gen = mk_num_duration_gen()
+        switch_file_at_gen = mk_switch_file_at_gen()
 
         def start_file_out():
-            file_num, _duration = next(num_duration_gen)
-            start = datetime.now(timezone.utc).astimezone()
-            end = start + _duration if _duration else None
-            output_path = Path(output_dir) / filename(start=start, end=end, duration=_duration, file_num=file_num, count=count) if callable(filename) else filename
-            macmarrum_log.info(f"RECORD {file_num}/{count} {_duration} to {output_path}")
+            file_num, start, end, duration = next(switch_file_at_gen)
+            if file_num is None:
+                return None, None, None, None
+            output_path = Path(output_dir) / filename(start=start, end=end, duration=duration, file_num=file_num,
+                                                      count=count) if callable(filename) else filename
+            macmarrum_log.info(f"RECORD {file_num}/{count} {duration} to {output_path}")
             if output_path.exists():
                 macmarrum_log.warning(f"Writing to an existing file: {output_path}")
             return output_path, output_path.open('wb'), file_num, end
@@ -407,25 +430,87 @@ class Macmarrum357:
                         args = [mpv_command, *mpv_options, f"appending://{path}"]
                     else:
                         args = [player, str(path)]
-                    macmarrum_log.debug(f"SPAWN {args}")
+                    macmarrum_log.info(f"SPAWN {args}")
                     return subprocess.Popen(args).pid
 
+        self.ensure_login_done()
         file_path, fo, num, end_dt = start_file_out()
         resp = self.session.get(self.STREAM, headers={c.USER_AGENT: self.USER_AGENT}, stream=True)
         resp.raise_for_status()
         spawn_player_if_requested(file_path)
+        self.run_periodic_token_refresh_thread()
         for chunk in resp.iter_content(chunk_size=self.RECORD_CHUNK_SIZE):
             fo.write(chunk)
             if end_dt and datetime.now(timezone.utc) >= end_dt:
                 fo.close()
-                if num == count:
-                    return
+                file_path, fo, num, end_dt = start_file_out()
+                if file_path is None:
+                    break
                 else:
-                    file_path, fo, num, end_dt = start_file_out()
                     spawn_player_if_requested(file_path)
         if not fo.closed:
             fo.close()
 
+    @staticmethod
+    def parse_switch_file_at_spec(switch_file_at_spec: str | int, is_every_hour_found: bool):
+        hms = str(switch_file_at_spec).split(':')
+        if len(hms) == 1:
+            h = hms[0]
+            m = 0
+            s = 0
+        elif len(hms) == 2:
+            h, m = hms
+            s = 0
+        elif len(hms) == 3:
+            h, m, s = hms
+        else:
+            raise ValueError(f"{hms} contains {len(hms)} parts - expected 1, 2 or 3")
+        if is_every_hour_found:
+            assert h == '*'
+            h = None
+        else:
+            h = int(h)
+        m = int(m)
+        s = int(s)
+        return h, m, s
+
+    @staticmethod
+    def calc_start_end_duration(h, m, s):
+        start = datetime.now(timezone.utc).astimezone()
+        end = start if h > start.hour else start + timedelta(days=1)
+        end = end.replace(hour=h, minute=m, second=s, microsecond=0)
+        duration = end - start
+        return start, end, duration
+
+    def run_periodic_token_refresh_thread(self):
+        def periodic_token_refresh():
+            macmarrum_log.debug('RUN periodic_token_refresh')
+            expires = self.get_cookie(c.TOKEN).expires
+            expires_with_margin = expires - 5
+            while time() < expires_with_margin:
+                sleep(5)
+            attempt = 0
+            while True:
+                attempt += 1
+                macmarrum_log.debug(f"periodic_token_refresh ATTEMPT {attempt}")
+                resp = self.refresh_or_login_and_query_to_verify()
+                if resp.status_code != 200:
+                    macmarrum_log.debug(
+                        f"periodic_token_refresh UNSUCCESSFUL; waiting {5 * attempt} sec before retrying")
+                    sleep(5 * attempt)
+                else:
+                    break
+            periodic_token_refresh()
+
+        name = 'Tread-periodic_token_refresh'
+        macmarrum_log.debug(f"START {name}")
+        Thread(target=periodic_token_refresh, name=name).start()
+
 
 if __name__ == '__main__':
-    Macmarrum357().play()
+    for a in sys.argv:
+        if a.startswith('--record='):
+            Macmarrum357().record(a.removeprefix('--record='))
+            break
+    else:  # no break
+        Macmarrum357().play()
