@@ -68,7 +68,7 @@ def get_appdata() -> Path:
         raise RuntimeError(f"unknown os.name: {os.name}")
 
 
-def sleep_if_requested():
+def sleep_if_requested(start_time: datetime | None = None):
     sleep_sec = 0
     if '--sleep' in sys.argv:
         k = None
@@ -81,8 +81,14 @@ def sleep_if_requested():
         del sys.argv[k + 1]
         del sys.argv[k]
     if sleep_sec:
-        macmarrum_log.info(f"sleeping for {sleep_sec} seconds")
-        sleep(sleep_sec)
+        if start_time is None:
+            sleep(sleep_sec)
+        else:
+            end_time = start_time + timedelta(seconds=sleep_sec)
+            sleep_interval = min(sleep_sec / 100, 0.5)
+            macmarrum_log.info(f"sleeping for {sleep_sec} seconds, until {end_time.isoformat(sep=' ')}")
+            while datetime.now(timezone.utc) < end_time:
+                sleep(sleep_interval)
 
 
 def iter_mozilla_cookies_as_csv(cookiejar: RequestsCookieJar | CookieJar, sep: str = ' '):
@@ -117,6 +123,7 @@ class c:
     CAPPING_TIMESTAMP = 'cappingTimestamp'
     ACCEPT = 'Accept'
     APPLICATION_JSON = 'application/json'
+    ACCEPT_ENCODING = 'Accept-Encoding'
 
 
 class Macmarrum357:
@@ -146,6 +153,7 @@ class Macmarrum357:
     REDCDN_LIVE = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
     USER_AGENT = 'macmarrum/357'
     UA_HEADERS = {c.USER_AGENT: USER_AGENT}
+    AE_HEADERS = {c.ACCEPT: 'audio/aac', c.ACCEPT_ENCODING: 'identity'}
     ACCEPT_JSON_HEADERS = {c.ACCEPT: c.APPLICATION_JSON}
     TOKEN_VALIDITY_DELTA = timedelta(minutes=60)
     RECORD_CHUNK_SIZE = 8192
@@ -156,7 +164,8 @@ class Macmarrum357:
     macmarrum357_cookies_txt_path = macmarrum357_path / 'cookies.txt'
 
     def __init__(self):
-        macmarrum_log.debug(f"Macmarrum357() {datetime.now().date().isoformat()}")
+        self.init_datetime = datetime.now(timezone.utc).astimezone()
+        macmarrum_log.debug(f"Macmarrum357() {self.init_datetime.date().isoformat()}")
         self.conf = {}
         self.load_config()
         # self.init_logging()
@@ -164,7 +173,7 @@ class Macmarrum357:
         self.load_cookies()
         self.is_cookies_changed = False
         self.record_hour = None
-        self.is_recoding_in_progress = False
+        self.is_playing_or_recoding_in_progress = False
 
     def load_config(self):
         if not self.macmarrum357_json_path.exists():
@@ -229,8 +238,11 @@ class Macmarrum357:
     def play(self):
         self.ensure_login_done()
         self.persist_cookies_if_changed()
+        self.is_playing_or_recoding_in_progress = True
+        self.run_periodic_token_refresh_thread()
         sleep_if_requested()
         self.run_mpv()
+        self.is_playing_or_recoding_in_progress = False
 
     def ensure_login_done(self):
         resp = self.refresh_or_login_and_query_to_verify()
@@ -293,7 +305,6 @@ class Macmarrum357:
         mcj.save(self.macmarrum357_cookies_txt_path.as_posix())
 
     def query_account(self):
-        # This is what the web app usually does, before playing the live stream
         macmarrum_log.debug('QUERY account')
         url = 'https://auth.r357.eu/api/account'
         token = self.session.cookies.get(c.TOKEN)
@@ -302,18 +313,18 @@ class Macmarrum357:
 
     def refresh_or_login_and_query_to_verify(self):
         # try to refresh the token before falling back to login
-        do_login = False
+        is_to_login = False
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
         if not refresh_token_cookie.value:
-            do_login = True
+            is_to_login = True
         elif time() > refresh_token_cookie.expires - 55 * 60:  # it's been more than 5 min since last refresh
             resp = self.refresh_token()
             if resp.status_code == 200:
                 self.update_and_persist_tokens_from_resp(resp)
             else:
                 macmarrum_log.debug(f"UNSUCCESSFUL refresh {resp.status_code} {resp.text}")
-                do_login = True
-        if do_login:
+                is_to_login = True
+        if is_to_login:
             resp = self.login()
             if resp.status_code == 200:
                 self.update_and_persist_tokens_from_resp(resp)
@@ -330,21 +341,17 @@ class Macmarrum357:
         return self.session.post(url, headers=headers, json={c.REFRESHTOKEN: refresh_token})
 
     def update_and_persist_tokens_from_resp(self, resp):
+        def mk_cookie(name: str, value, expires):
+            return Cookie(0, name, value, None, False, '.radio357.pl', True, True,
+                          '/', True, True, expires, False, None, None, {}, False)
+
         macmarrum_log.debug(f"{resp.status_code} {resp.text}")
         d = resp.json()
         expires = int((datetime.now().replace(microsecond=0) + self.TOKEN_VALIDITY_DELTA).timestamp())
-        cookie = Cookie(0, c.TOKEN, d[c.ACCESS_TOKEN], None, False, '.radio357.pl', True, True,
-                        '/', True, True, expires, False, None, None, {}, False)
-        self.session.cookies.set_cookie(cookie)
-        cookie = Cookie(0, c.TOKEN_EXPIRES, f"{expires}000", None, False, '.radio357.pl', True, True,
-                        '/', True, True, expires, False, None, None, {}, False)
-        self.session.cookies.set_cookie(cookie)
-        cookie = Cookie(0, c.REFRESH_TOKEN, d[c.REFRESHTOKEN], None, False, '.radio357.pl', True, True,
-                        '/', True, True, expires, False, None, None, {}, False)
-        self.session.cookies.set_cookie(cookie)
-        cookie = Cookie(0, c.REFRESH_TOKEN_EXPIRES, f"{expires}000", None, False, '.radio357.pl', True, True,
-                        '/', True, True, expires, False, None, None, {}, False)
-        self.session.cookies.set_cookie(cookie)
+        self.session.cookies.set_cookie(mk_cookie(c.TOKEN, d[c.ACCESS_TOKEN], expires))
+        self.session.cookies.set_cookie(mk_cookie(c.TOKEN_EXPIRES, f"{expires}000", expires))
+        self.session.cookies.set_cookie(mk_cookie(c.REFRESH_TOKEN, d[c.REFRESHTOKEN], expires))
+        self.session.cookies.set_cookie(mk_cookie(c.REFRESH_TOKEN_EXPIRES, f"{expires}000", expires))
         self.is_cookies_changed = True
 
     def login(self):
@@ -355,42 +362,57 @@ class Macmarrum357:
         return self.session.post(url, headers=headers, json=credentials)
 
     def run_mpv(self):
+        def quote(x):
+            return f'"{x}"'
+
         mpv = self.conf.get(c.MPV_COMMAND, 'mpv')
         mpv_args = self.conf.get(c.MPV_OPTIONS, [])
-        args = [Path(mpv).name,
+        ae_headers = ','.join(f"'{k}: {v}'" for k, v in self.AE_HEADERS.items())
+        args = [mpv,
                 self.STREAM,
                 f"--user-agent={self.USER_AGENT}",
                 '--cookies=yes',
                 f"--cookies-file={self.macmarrum357_cookies_txt_path}",
+                f"--http-header-fields={ae_headers}",
                 # add any args specified in macmarrum357.json
                 *mpv_args,
                 # add any args passed on the command line
                 *sys.argv[1:]
                 ]
-        macmarrum_log.debug(f"RUN {mpv} {args}")
+        macmarrum_log.debug(f"RUN [{' '.join(quote(a) for a in args)}]")
         try:
-            os.execvp(mpv, args)
+            subprocess.run(args)
         except FileNotFoundError:
-            print(f"** 'mpv_path' might be missing or incorrect in {self.macmarrum357_json_path}")
+            macmarrum_log.error(f"'mpv_command' might be missing or incorrect in {self.macmarrum357_json_path}")
             raise
+        finally:
+            self.is_playing_or_recoding_in_progress = False
 
-    def record(self, args_as_json: str):
+    def record(self):
+        args_as_json = None
+        for arg in sys.argv:
+            if arg.startswith('--record='):
+                args_as_json = arg.removeprefix('--record=')
+                break
         macmarrum_log.debug(f"{args_as_json=}")
         record_args = json.loads(args_as_json)
         macmarrum_log.debug(f"{record_args=}")
         self.start_recording(**record_args)
 
-    def start_recording(self, output_dir: str | Path, filename: str | Callable = None,
+    def start_recording(self, output_dir: str | Path = None, filename: str | Callable | None = None,
                         switch_file_at: Sequence[str | int] = ('*:00', '00:00'), player: str | Callable | None = None):
         """
-        :param output_dir:
-        :param filename:
-        :param switch_file_at: a sequence of time spec 'HH:MM:SS', e.g. ('6:00', '9:00', '12:00'), the last one meaning stop
-        :param player:
-        :return:
+        :param output_dir: path to the output directory; if missing: current working directory
+        :param filename: file name or a callable to create it based on switch_file_at date/time;
+         if missing: mk_filename(...) which returns `%Y-%m-%d,%a_%H.aac`, based on start time
+        :param switch_file_at: a sequence of time spec `HH:MM:SS`, e.g. ('6:00', '9:00', '12:00'),
+         the last one meaning stop; special syntax exists to switch file every hour (`*`),
+         e.g. when run at 6:00, the following ('*:00', '9:00') will produce 3 1-hour files: 6:00, 7:00 and 8:00
+        :param player: command to spawn at each file switch; if `mpv_command`, mpv_options from config are also used
         """
-        self.is_recoding_in_progress = True
-        # self.run_get_now_playing()
+        self.is_playing_or_recoding_in_progress = True
+        if output_dir is None:
+            output_dir = Path().absolute()
         if filename is None:
             filename = mk_filename
 
@@ -400,8 +422,6 @@ class Macmarrum357:
 
         def start_file_out():
             file_num, start, end, duration = next(switch_file_datetime_iterator)
-            if file_num is None:
-                return None, None, None, None
             output_path = Path(output_dir) / filename(start=start, end=end, duration=duration, file_num=file_num,
                                                       count=count) if callable(filename) else filename
             macmarrum_log.info(f"RECORD {file_num}/{count} {duration} to {output_path}")
@@ -424,57 +444,58 @@ class Macmarrum357:
                     return subprocess.Popen(args).pid
 
         self.ensure_login_done()
-        file_path, fo, num, end_dt = start_file_out()
-        url = self.STREAM
-        headers = self.UA_HEADERS | {
-            'Accept': 'audio/webm,audio/ogg,audio/wav,audio/*;q=0.9,application/ogg;q=0.7,video/*;q=0.6,*/*;q=0.5',
-            'Accept-Encoding': 'identity'
-        }
-        capping_timestamp_cookie = self.get_cookie(c.CAPPING_TIMESTAMP, '.radio357.pl.cdns-redge.media')
-        while True:
-            macmarrum_log.debug(f"URL {url}")
-            resp = self.session.get(url, headers=headers, stream=True, allow_redirects=False)
-            if 'radio357.pl.cdns-redge.media' in url:
-                a = capping_timestamp_cookie
-                b = self.get_cookie(c.CAPPING_TIMESTAMP, '.radio357.pl.cdns-redge.media')
-                a_expires = datetime.fromtimestamp(a.expires).astimezone().isoformat()
-                b_expires = datetime.fromtimestamp(b.expires).astimezone().isoformat()
-                macmarrum_log.debug(
-                    f"{c.CAPPING_TIMESTAMP} {b.value} expires {b_expires} | previous {a.value}: {a_expires}")
-            if resp.is_redirect:
-                url = resp.headers['location']
-                if url == self.REDCDN_LIVE:
-                    macmarrum_log.debug('### URL += ?preroll=0')
-                    url += '?preroll=0'
-            else:
-                resp.raise_for_status()
-                self.dump_cookies_pickle()
-                break
-        spawn_player_if_requested(file_path)
         self.run_periodic_token_refresh_thread()
-        for chunk in resp.iter_content(chunk_size=self.RECORD_CHUNK_SIZE):
-            fo.write(chunk)
-            if end_dt and datetime.now(timezone.utc) >= end_dt:
-                fo.close()
-                file_path, fo, num, end_dt = start_file_out()
-                if file_path is None:
-                    break
+        sleep_if_requested(self.init_datetime)
+        try:
+            file_path, fo, num, end_dt = start_file_out()
+            url = self.STREAM
+            headers = self.UA_HEADERS | self.AE_HEADERS
+            capping_timestamp_cookie = self.get_cookie(c.CAPPING_TIMESTAMP, '.radio357.pl.cdns-redge.media')
+            while True:
+                macmarrum_log.debug(f"URL {url}")
+                resp = self.session.get(url, headers=headers, stream=True, allow_redirects=False)
+                if 'radio357.pl.cdns-redge.media' in url:
+                    a = capping_timestamp_cookie
+                    b = self.get_cookie(c.CAPPING_TIMESTAMP, '.radio357.pl.cdns-redge.media')
+                    a_expires = datetime.fromtimestamp(a.expires).astimezone().isoformat()
+                    b_expires = datetime.fromtimestamp(b.expires).astimezone().isoformat()
+                    macmarrum_log.debug(
+                        f"{c.CAPPING_TIMESTAMP} {b.value} expires {b_expires} | previous {a.value}: {a_expires}")
+                if resp.is_redirect:
+                    url = resp.headers['location']
+                    if url == self.REDCDN_LIVE:
+                        macmarrum_log.debug('### URL += ?preroll=0')
+                        url += '?preroll=0'
                 else:
-                    spawn_player_if_requested(file_path)
-        if fo and not fo.closed:
-            fo.close()
-        self.is_recoding_in_progress = False
+                    resp.raise_for_status()
+                    self.dump_cookies_pickle()
+                    break
+            spawn_player_if_requested(file_path)
+            for chunk in resp.iter_content(chunk_size=self.RECORD_CHUNK_SIZE):
+                fo.write(chunk)
+                if end_dt and datetime.now(timezone.utc) >= end_dt:
+                    fo.close()
+                    try:
+                        file_path, fo, num, end_dt = start_file_out()
+                    except StopIteration:
+                        break
+                    else:
+                        spawn_player_if_requested(file_path)
+            if fo and not fo.closed:
+                fo.close()
+        finally:
+            self.is_playing_or_recoding_in_progress = False
 
     def run_periodic_token_refresh_thread(self):
         name = 'periodic_token_refresh'
-        macmarrum_log.debug(f"START Thread {name}")
+        macmarrum_log.info(f"START Thread {name}")
 
         def periodic_token_refresh():
             macmarrum_log.debug('RUN periodic_token_refresh')
             expires = self.get_cookie(c.TOKEN).expires
             expires_with_margin = expires - 5 * 60
             while time() < expires_with_margin:
-                if not self.is_recoding_in_progress:
+                if not self.is_playing_or_recoding_in_progress:
                     return
                 sleep(5)
             attempt = 0
@@ -482,13 +503,13 @@ class Macmarrum357:
                 attempt += 1
                 macmarrum_log.debug(f"periodic_token_refresh ATTEMPT {attempt}")
                 resp = self.refresh_or_login_and_query_to_verify()
-                if resp.status_code != 200 and self.is_recoding_in_progress:
+                if resp.status_code != 200 and self.is_playing_or_recoding_in_progress:
                     msg = f"periodic_token_refresh UNSUCCESSFUL; waiting {5 * attempt} sec before retrying"
                     macmarrum_log.debug(msg)
                     sleep(5 * attempt)
                 else:
                     break
-            if self.is_recoding_in_progress:
+            if self.is_playing_or_recoding_in_progress:
                 periodic_token_refresh()
 
         threading.Thread(target=periodic_token_refresh, name=name).start()
@@ -511,6 +532,7 @@ class SwitchFileDateTime:
     RX_H_MM_SS = re.compile(r'^(\*|\d{1,2})(:\d{1,2}){0,2}$')
 
     def __init__(self, switch_file_at: Sequence[str | int]):
+        macmarrum_log.debug(f"SwitchFileDateTime {switch_file_at}")
         self._is_every_hour = None
         self._switch_file_at = switch_file_at
         self._validate()
@@ -557,7 +579,11 @@ class SwitchFileDateTime:
                 iterator = self._mk_iterator_for_asterisk_arg0(now)
             else:
                 iterator = self._mk_iterator_for_regular_args(now)
-            self._count = len(list(iterator))
+            macmarrum_log.debug(f"SwitchFileDateTime {self.parsed_switch_file_at}")
+            sequence = list(iterator)
+            for tup in sequence:
+                macmarrum_log.debug(f"SwitchFileDateTime {tup}")
+            self._count = len(sequence)
         return self._count
 
     def _parse(self):
@@ -601,7 +627,6 @@ class SwitchFileDateTime:
             duration = end - start
             file_num += 1
             yield file_num, start, end, duration
-        yield None, None, None, None
 
     def _mk_iterator_for_asterisk_arg0(self, _now: datetime = None) -> SwitchFileIterator:
         start = _now or datetime.now(timezone.utc).astimezone()
@@ -625,13 +650,12 @@ class SwitchFileDateTime:
             duration = end - start
             file_num += 1
             yield file_num, start, end, duration
-        yield None, None, None, None
 
 
 if __name__ == '__main__':
     for arg in sys.argv:
         if arg.startswith('--record='):
-            Macmarrum357().record(arg.removeprefix('--record='))
+            Macmarrum357().record()
             break
     else:  # no break
         Macmarrum357().play()
