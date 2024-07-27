@@ -9,7 +9,17 @@ def test_generator_for_asterisk_arg0_at_2330_till_0000():
     _0000 = cron_time.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
     expected = [
         (1, cron_time, _0000, _0000 - cron_time),
-        (None, None, None, None)
+    ]
+    actual = list(SwitchFileDateTime(entry)._mk_iterator_for_asterisk_arg0(_now=cron_time))
+    assert actual == expected
+
+
+def _test_generator_for_asterisk_arg0_at_215300_till_220015():
+    cron_time = datetime.now(timezone.utc).astimezone().replace(hour=21, minute=53, second=0, microsecond=0)
+    entry = ['*:55:15', '21:55:15']
+    _215515 = cron_time.replace(hour=21, minute=55, second=15, microsecond=0)
+    expected = [
+        (1, cron_time, _215515, _215515 - cron_time),
     ]
     actual = list(SwitchFileDateTime(entry)._mk_iterator_for_asterisk_arg0(_now=cron_time))
     assert actual == expected
@@ -28,7 +38,6 @@ def test_generator_for_asterisk_arg0_at_2200_till_0200():
         (2, _2300, _0000, hours1),
         (3, _0000, _0100, hours1),
         (4, _0100, _0200, hours1),
-        (None, None, None, None)
     ]
     actual = list(SwitchFileDateTime(entry)._mk_iterator_for_asterisk_arg0(_now=cron_time))
     assert actual == expected
@@ -45,7 +54,6 @@ def test_generator_for_asterisk_arg0_plus_3h():
         (1, cron_time, _700, _700 - cron_time),
         (2, _700, _800, h1),
         (3, _800, _900, h1),
-        (None, None, None, None)
     ]
     actual = list(SwitchFileDateTime(entry)._mk_iterator_for_asterisk_arg0(_now=cron_time))
     assert actual == expected
@@ -75,7 +83,22 @@ def test_generator_for_regular_args_of_int_type():
         (1, cron_time, _700, _700 - cron_time),
         (2, _700, _800, h1),
         (3, _800, _900, h1),
-        (None, None, None, None)
     ]
     actual = list(SwitchFileDateTime(entry)._mk_iterator_for_regular_args(_now=cron_time))
+    assert actual == expected
+
+
+def test_generator_for_datetime_args():
+    cron_time = datetime.now(timezone.utc).astimezone().replace(hour=6, minute=0, second=0, microsecond=100)
+    _700 = cron_time.replace(hour=7, minute=0, second=0, microsecond=0)
+    _800 = cron_time.replace(hour=8, minute=0, second=0, microsecond=0)
+    _900 = cron_time.replace(hour=9, minute=0, second=0, microsecond=0)
+    h1 = timedelta(hours=1)
+    entry = [_700, _800, _900]
+    expected = [
+        (1, cron_time, _700, _700 - cron_time),
+        (2, _700, _800, h1),
+        (3, _800, _900, h1),
+    ]
+    actual = list(SwitchFileDateTime(entry)._mk_iterator_for_datetime_args(_now=cron_time))
     assert actual == expected
