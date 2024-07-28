@@ -5,6 +5,7 @@
 import http.client
 import json
 import logging
+import logging.config
 import os
 import pickle
 import re
@@ -24,39 +25,11 @@ me = Path(__file__)
 
 __version__ = '2024.07.13'
 
-fmt = '{asctime} {levelname:5} {name:22} | {message}'
-style = '{'
-my_formatter = logging.Formatter(fmt=fmt, style=style)
-my_formatter.default_time_format = '%H:%M:%S'
-to_console = logging.StreamHandler()
-to_console.setFormatter(my_formatter)
-to_console.setLevel(logging.INFO)
-to_file = logging.FileHandler(me.with_suffix('.log'))
-to_file.setFormatter(my_formatter)
+UTF8 = 'UTF-8'
 
-
-def config_handlers(logger: logging.Logger):
-    logger.addHandler(to_console)
-    logger.addHandler(to_file)
-
-
-macmarrum_log = logging.getLogger(me.stem)
-config_handlers(macmarrum_log)
-if os.environ.get('MACMARRUM357_DEBUG') == '1':
-    macmarrum_log.setLevel(logging.DEBUG)
-    requests_log = logging.getLogger("urllib3")
-    requests_log.setLevel(logging.DEBUG)
-    requests_log.propagate = True
-    config_handlers(requests_log)
-    # # Caution: this will log all request headers and data, and response headers (but no data)
-    http.client.HTTPConnection.debuglevel = 1
-    # # http.client doesn't use logging, only print
-    http_client_log = logging.getLogger('http.client')
-    http.client.print = lambda *args: http_client_log.debug(' '.join(args))
-    http_client_log.setLevel(logging.DEBUG)
-    config_handlers(http_client_log)
-else:
-    macmarrum_log.setLevel(logging.INFO)
+macmarrum_log = logging.getLogger('macmarrum357')
+requests_log = logging.getLogger('urllib3')
+http_client_log = logging.getLogger('http.client')
 
 
 def get_appdata() -> Path:
@@ -66,6 +39,103 @@ def get_appdata() -> Path:
         return Path(os.environ.get('XDG_CONFIG_HOME', '~/.config')).expanduser()
     else:
         raise RuntimeError(f"unknown os.name: {os.name}")
+
+
+macmarrum357_path = get_appdata() / 'macmarrum357'
+macmarrum357_path.mkdir(exist_ok=True)
+logging_json_path = macmarrum357_path / 'logging.json'
+
+LOGGING_CONFIG_DEFAULT = {
+    "version": 1,
+    "filters": {
+        "hide_reply_header": {
+            "()": "macmarrum357.mk_hide_reply_header_filter"
+        },
+        "hide_urllib3_reply_https": {
+            "()": "macmarrum357.mk_hide_urllib3_reply_https_filter"
+        }
+    },
+    "formatters": {
+        "formatter": {
+            "format": "{asctime} {levelname:5} {name:22} | {message}",
+            "style": "{",
+            "validate": True
+        }
+    },
+    "handlers": {
+        "to_console": {
+            "class": "logging.StreamHandler",
+            "formatter": "formatter",
+            "filters": ["hide_urllib3_reply_https"]
+        },
+        "to_file": {
+            "class": "logging.FileHandler",
+            "filename": "macmarrum357.log",
+            "encoding": "UTF-8",
+            "formatter": "formatter",
+            "filters": ["hide_urllib3_reply_https"]
+        }
+    },
+    "loggers": {
+        "macmarrum357": {
+            "level": "INFO",
+            "handlers": [
+                "to_console",
+                "to_file"
+            ]
+        },
+        "urllib3": {
+            "level": "INFO",
+            "handlers": [
+                "to_console",
+                "to_file"
+            ]
+        },
+        "http.client": {
+            "level": "INFO",
+            "filters": ["hide_reply_header"],
+            "handlers": [
+                "to_console",
+                "to_file"
+            ]
+        }
+    }
+}
+
+
+def mk_hide_reply_header_filter():
+    def should_log_record(record: logging.LogRecord) -> bool:
+        return not record.msg.startswith('header: ')
+
+    return should_log_record
+
+
+def mk_hide_urllib3_reply_https_filter():
+    name = 'urllib3.connectionpool'
+    msg = '%s://%s:%s "%s %s %s" %s %s'
+
+    def should_log_record(record: logging.LogRecord) -> bool:
+        if record.name.startswith(name):
+            # print(f">> {record.msg}")
+            return not record.msg.startswith(msg)
+        else:
+            return True
+
+    return should_log_record
+
+
+def configure_logging():
+    if not logging_json_path.exists():
+        with logging_json_path.open('w') as fo:
+            json.dump(LOGGING_CONFIG_DEFAULT, fo, indent=2)
+            dict_config = LOGGING_CONFIG_DEFAULT
+    else:
+        with logging_json_path.open('r') as fi:
+            dict_config = json.load(fi)
+    logging.config.dictConfig(dict_config)
+    if http_client_log.level == logging.DEBUG:
+        http.client.HTTPConnection.debuglevel = 1
+        http.client.print = lambda *args: http_client_log.debug(' '.join(args))
 
 
 def sleep_if_requested(start_time: datetime | None = None):
@@ -157,11 +227,9 @@ class Macmarrum357:
     ACCEPT_JSON_HEADERS = {c.ACCEPT: c.APPLICATION_JSON}
     TOKEN_VALIDITY_DELTA = timedelta(minutes=60)
     RECORD_CHUNK_SIZE = 8192
-    macmarrum357_path = get_appdata() / 'macmarrum357'
-    macmarrum357_path.mkdir(exist_ok=True)
-    macmarrum357_json_path = macmarrum357_path / 'config.json'
-    macmarrum357_cookies_pickle_path = macmarrum357_path / 'cookies.pickle'
-    macmarrum357_cookies_txt_path = macmarrum357_path / 'cookies.txt'
+    config_json_path = macmarrum357_path / 'config.json'
+    cookies_pickle_path = macmarrum357_path / 'cookies.pickle'
+    cookies_txt_path = macmarrum357_path / 'cookies.txt'
 
     def __init__(self):
         self.init_datetime = datetime.now(timezone.utc).astimezone()
@@ -173,60 +241,28 @@ class Macmarrum357:
         self.load_cookies()
         self.is_cookies_changed = False
         self.record_hour = None
-        self.is_playing_or_recoding_in_progress = False
+        self.is_playing_or_recoding = False
 
     def load_config(self):
-        if not self.macmarrum357_json_path.exists():
-            with self.macmarrum357_json_path.open('w') as fo:
+        if not self.config_json_path.exists():
+            with self.config_json_path.open('w') as fo:
                 conf = {c.EMAIL: '', c.PASSWORD: ''}
                 if os.name == 'nt':
                     conf |= {c.MPV_COMMAND: 'mpv', c.MPV_OPTIONS: ['--force-window=immediate']}
                 json.dump(conf, fo, indent=2)
         else:
-            with self.macmarrum357_json_path.open('r') as fi:
+            with self.config_json_path.open('r') as fi:
                 conf = json.load(fi)
-                macmarrum_log.debug(f"LOAD {self.macmarrum357_json_path.name} {conf}")
+                macmarrum_log.debug(f"LOAD {self.config_json_path.name} {conf}")
         assert conf.get(c.EMAIL) and conf.get(
-            c.PASSWORD), f"{self.macmarrum357_json_path} is missing email and/or password values"
+            c.PASSWORD), f"{self.config_json_path} is missing email and/or password values"
         self.conf = conf
 
-    def init_logging(self):
-        dict_config = {
-            'version': 1,
-            'formatters': {
-                'formatter': {
-                    'format': '{asctime} {levelname:5} {name:22} | {message}',
-                    'style': '{',
-                    'validate': True,
-                }
-            },
-            'handlers': {
-                'to_console': {
-                    'class': 'logging.StreamHandler',
-                    'formatter': 'formatter',
-                    # 'level': 'DEBUG',
-                },
-                'to_file': {
-                    'class': 'logging.FileHandler',
-                    'filename': 'macmarrum357.log',
-                    'encoding': 'UTF-8',
-                    'formatter': 'formatter',
-                    # 'level': 'DEBUG',
-                }
-            },
-            'loggers': {
-                'macmarrum357': {
-                    'level': 'INFO',
-                    'handlers': ['to_console', 'to_file'],
-                }
-            }
-        }
-
     def load_cookies(self):
-        msg = f"LOAD {self.macmarrum357_cookies_pickle_path.name}"
+        msg = f"LOAD {self.cookies_pickle_path.name}"
         macmarrum_log.debug(msg)
         try:
-            with self.macmarrum357_cookies_pickle_path.open('rb') as fi:
+            with self.cookies_pickle_path.open('rb') as fi:
                 cj: RequestsCookieJar = pickle.load(fi)
                 # for cookie_line in iter_mozilla_cookies_as_csv(cj):
                 #     macmarrum_log.debug(f"LOAD {self.macmarrum357_cookies_pickle_path.name} {cookie_line}")
@@ -238,11 +274,11 @@ class Macmarrum357:
     def play(self):
         self.ensure_login_done()
         self.persist_cookies_if_changed()
-        self.is_playing_or_recoding_in_progress = True
+        self.is_playing_or_recoding = True
         self.run_periodic_token_refresh_thread()
         sleep_if_requested()
         self.run_mpv()
-        self.is_playing_or_recoding_in_progress = False
+        self.is_playing_or_recoding = False
 
     def ensure_login_done(self):
         resp = self.refresh_or_login_and_query_to_verify()
@@ -282,19 +318,19 @@ class Macmarrum357:
 
     def dump_cookies_pickle(self):
         def target():
-            macmarrum_log.debug(f"WRITE {self.macmarrum357_cookies_pickle_path.name}")
+            macmarrum_log.debug(f"WRITE {self.cookies_pickle_path.name}")
             cj = self.session.cookies.copy()
             cj.clear_session_cookies()
             cj.clear_expired_cookies()
             # for cookie_line in iter_mozilla_cookies_as_csv(cj):
             #     macmarrum_log.debug(f"WRITE {self.macmarrum357_cookies_pickle_path.name} {cookie_line}")
-            with self.macmarrum357_cookies_pickle_path.open('wb') as fo:
+            with self.cookies_pickle_path.open('wb') as fo:
                 pickle.dump(cj, fo)
 
         threading.Thread(target=target, name='dump_cookies_pickle').start()
 
     def save_cookies_txt(self):
-        macmarrum_log.debug(f"WRITE {self.macmarrum357_cookies_txt_path.name}")
+        macmarrum_log.debug(f"WRITE {self.cookies_txt_path.name}")
         mcj = MozillaCookieJar()
         for cookie in self.session.cookies:
             mcj.set_cookie(cookie)
@@ -302,7 +338,7 @@ class Macmarrum357:
         mcj.clear_expired_cookies()
         # for cookie_line in iter_mozilla_cookies_as_csv(mcj):
         #     macmarrum_log.debug(f"WRITE {self.macmarrum357_cookies_txt_path.name} {cookie_line}")
-        mcj.save(self.macmarrum357_cookies_txt_path.as_posix())
+        mcj.save(self.cookies_txt_path.as_posix())
 
     def query_account(self):
         macmarrum_log.debug('QUERY account')
@@ -372,7 +408,7 @@ class Macmarrum357:
                 self.STREAM,
                 f"--user-agent={self.USER_AGENT}",
                 '--cookies=yes',
-                f"--cookies-file={self.macmarrum357_cookies_txt_path}",
+                f"--cookies-file={self.cookies_txt_path}",
                 f"--http-header-fields={ae_headers}",
                 # add any args specified in macmarrum357.json
                 *mpv_args,
@@ -383,10 +419,10 @@ class Macmarrum357:
         try:
             subprocess.run(args)
         except FileNotFoundError:
-            macmarrum_log.error(f"'mpv_command' might be missing or incorrect in {self.macmarrum357_json_path}")
+            macmarrum_log.error(f"'mpv_command' might be missing or incorrect in {self.config_json_path}")
             raise
         finally:
-            self.is_playing_or_recoding_in_progress = False
+            self.is_playing_or_recoding = False
 
     def record(self):
         args_as_json = None
@@ -400,7 +436,8 @@ class Macmarrum357:
         self.start_recording(**record_args)
 
     def start_recording(self, output_dir: str | Path = None, filename: str | Callable | None = None,
-                        switch_file_at: Sequence[str | int] = ('*:00', '00:00'), player: str | Callable | None = None):
+                        switch_file_at: Sequence[str | int | datetime] = ('*:00', '00:00'),
+                        on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None):
         """
         :param output_dir: path to the output directory; if missing: current working directory
         :param filename: file name or a callable to create it based on switch_file_at date/time;
@@ -408,9 +445,14 @@ class Macmarrum357:
         :param switch_file_at: a sequence of time spec `HH:MM:SS`, e.g. ('6:00', '9:00', '12:00'),
          the last one meaning stop; special syntax exists to switch file every hour (`*`),
          e.g. when run at 6:00, the following ('*:00', '9:00') will produce 3 1-hour files: 6:00, 7:00 and 8:00
-        :param player: command to spawn at each file switch; if `mpv_command`, mpv_options from config are also used
+        :param on_file_start: command to spawn at each file switch, after starting a file;
+         if `mpv_command`, mpv_options from config are also used;
+         if it's a callable, make sure to use non-blocking code
+        :param on_file_end: command to spawn at each file switch, after ending a file;
+         if it's a callable, make sure to use non-blocking code;
+         example bash script: `/usr/bin/ffmpeg -i "$1" -acodec copy "${1%.aac}.m4a"`
         """
-        self.is_playing_or_recoding_in_progress = True
+        self.is_playing_or_recoding = True
         if output_dir is None:
             output_dir = Path().absolute()
         if filename is None:
@@ -429,21 +471,32 @@ class Macmarrum357:
                 macmarrum_log.warning(f"Writing to an existing file: {output_path}")
             return output_path, output_path.open('wb'), file_num, end
 
-        def spawn_player_if_requested(path):
-            if player is not None:
-                if callable(player):
-                    player(path)
+        def spawn_on_file_start_if_requested(path):
+            if on_file_start is not None:
+                if callable(on_file_start):
+                    on_file_start(path)
                 else:
-                    if player == 'mpv_command':
+                    if on_file_start == 'mpv_command':
                         mpv_command = self.conf.get(c.MPV_COMMAND, 'mpv')
                         mpv_options = self.conf.get(c.MPV_OPTIONS, [])
                         args = [mpv_command, *mpv_options, f"appending://{path}"]
                     else:
-                        args = [player, str(path)]
+                        args = [on_file_start, str(path)]
                     macmarrum_log.info(f"SPAWN {args}")
                     return subprocess.Popen(args).pid
 
-        self.ensure_login_done()
+        def spawn_on_file_end_if_requested(path):
+            if on_file_end is not None:
+                if callable(on_file_end):
+                    on_file_end(path)
+                else:
+                    args = [on_file_end, str(path)]
+                    macmarrum_log.info(f"SPAWN {args}")
+                    with subprocess.Popen(args, stderr=subprocess.PIPE) as proc:
+                        # Note: all stderr is logged at one go, after the command finishes
+                        for b_line in proc.stderr.read().splitlines(keepends=False):
+                            macmarrum_log.debug(b_line.decode(UTF8))
+
         self.run_periodic_token_refresh_thread()
         sleep_if_requested(self.init_datetime)
         try:
@@ -470,32 +523,37 @@ class Macmarrum357:
                     resp.raise_for_status()
                     self.dump_cookies_pickle()
                     break
-            spawn_player_if_requested(file_path)
+            spawn_on_file_start_if_requested(file_path)
             for chunk in resp.iter_content(chunk_size=self.RECORD_CHUNK_SIZE):
                 fo.write(chunk)
                 if end_dt and datetime.now(timezone.utc) >= end_dt:
                     fo.close()
+                    spawn_on_file_end_if_requested(file_path)
                     try:
                         file_path, fo, num, end_dt = start_file_out()
                     except StopIteration:
                         break
                     else:
-                        spawn_player_if_requested(file_path)
+                        spawn_on_file_start_if_requested(file_path)
             if fo and not fo.closed:
                 fo.close()
         finally:
-            self.is_playing_or_recoding_in_progress = False
+            self.is_playing_or_recoding = False
 
     def run_periodic_token_refresh_thread(self):
         name = 'periodic_token_refresh'
         macmarrum_log.info(f"START Thread {name}")
+        _24h_as_seconds = 24 * 60 * 60
+        _5m_as_seconds = 5 * 60
 
         def periodic_token_refresh():
             macmarrum_log.debug('RUN periodic_token_refresh')
+            if time() > self.get_cookie(c.R357_PID).expires - _24h_as_seconds:
+                self.init_r357_and_set_cookies_changed_if_needed()
             expires = self.get_cookie(c.TOKEN).expires
-            expires_with_margin = expires - 5 * 60
+            expires_with_margin = expires - _5m_as_seconds
             while time() < expires_with_margin:
-                if not self.is_playing_or_recoding_in_progress:
+                if not self.is_playing_or_recoding:
                     return
                 sleep(5)
             attempt = 0
@@ -503,13 +561,13 @@ class Macmarrum357:
                 attempt += 1
                 macmarrum_log.debug(f"periodic_token_refresh ATTEMPT {attempt}")
                 resp = self.refresh_or_login_and_query_to_verify()
-                if resp.status_code != 200 and self.is_playing_or_recoding_in_progress:
+                if resp.status_code != 200 and self.is_playing_or_recoding:
                     msg = f"periodic_token_refresh UNSUCCESSFUL; waiting {5 * attempt} sec before retrying"
                     macmarrum_log.debug(msg)
                     sleep(5 * attempt)
                 else:
                     break
-            if self.is_playing_or_recoding_in_progress:
+            if self.is_playing_or_recoding:
                 periodic_token_refresh()
 
         threading.Thread(target=periodic_token_refresh, name=name).start()
@@ -523,27 +581,38 @@ class Macmarrum357:
         self.session.cookies = cookies
 
 
-SwitchFileIterator = Iterator[tuple[int, datetime, datetime, timedelta] | tuple[None, None, None, None]]
+SwitchFileIterator = Iterator[tuple[int, datetime, datetime, timedelta]]
 
 
 class SwitchFileDateTime:
     HOURS1 = timedelta(hours=1)
     DAYS1 = timedelta(days=1)
     RX_H_MM_SS = re.compile(r'^(\*|\d{1,2})(:\d{1,2}){0,2}$')
+    FMT = '%H:%M:%S'
 
-    def __init__(self, switch_file_at: Sequence[str | int]):
-        macmarrum_log.debug(f"SwitchFileDateTime {switch_file_at}")
-        self._is_every_hour = None
+    def __init__(self, switch_file_at: Sequence[str | int | datetime]):
+        self._is_all_datetime = None
         self._switch_file_at = switch_file_at
+        sfa_for_log = [e.strftime(self.FMT) for e in switch_file_at] if self.is_all_datetime else switch_file_at
+        macmarrum_log.debug(f"SwitchFileDateTime switch_file_at={sfa_for_log}")
+        self._is_every_hour = None
         self._validate()
         self._parsed_switch_file_at = None
         self._count = None
 
     def _validate(self):
-        assert len(self._switch_file_at) > 0, f"expected size > 0, got {len(self._switch_file_at)}"
+        switch_file_at = self._switch_file_at
+        switch_file_at_len = len(switch_file_at)
+        assert switch_file_at_len > 0, f"expected size > 0, got {switch_file_at_len}"
         if self.is_every_hour:
-            assert len(self._switch_file_at) == 2, f"expected size == 2, got {len(self._switch_file_at)}"
-        assert all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in self._switch_file_at)
+            assert switch_file_at_len == 2, f"expected size == 2, got {switch_file_at_len}"
+        assert self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_at)
+
+    @property
+    def is_all_datetime(self):
+        if self._is_all_datetime is None:
+            self._is_all_datetime = all(isinstance(elem, datetime) for elem in self._switch_file_at)
+        return self._is_all_datetime
 
     @property
     def is_every_hour(self):
@@ -560,7 +629,9 @@ class SwitchFileDateTime:
 
     @property
     def iterator(self):
-        if self.is_every_hour:
+        if self.is_all_datetime:
+            return self._mk_iterator_for_datetime_args()
+        elif self.is_every_hour:
             return self._mk_iterator_for_asterisk_arg0()
         else:
             return self._mk_iterator_for_regular_args()
@@ -575,15 +646,18 @@ class SwitchFileDateTime:
         """
         if self._count is None:
             now = datetime.now(timezone.utc).astimezone()
-            if self.is_every_hour:
+            if self.is_all_datetime:
+                iterator = self._mk_iterator_for_datetime_args(now)
+            elif self.is_every_hour:
                 iterator = self._mk_iterator_for_asterisk_arg0(now)
             else:
                 iterator = self._mk_iterator_for_regular_args(now)
-            macmarrum_log.debug(f"SwitchFileDateTime {self.parsed_switch_file_at}")
-            sequence = list(iterator)
-            for tup in sequence:
-                macmarrum_log.debug(f"SwitchFileDateTime {tup}")
-            self._count = len(sequence)
+            FMT = self.FMT
+            i = 0
+            for e in iterator:
+                i += 1
+                macmarrum_log.debug(f"SwitchFileDateTime {e[0]}: [{e[1].strftime(FMT)}, {e[2].strftime(FMT)}]")
+            self._count = i
         return self._count
 
     def _parse(self):
@@ -610,7 +684,18 @@ class SwitchFileDateTime:
                 s = int(s)
             parsed_switch_file_at.append((h, m, s))
         self._parsed_switch_file_at = parsed_switch_file_at
+        macmarrum_log.debug(f"SwitchFileDateTime {parsed_switch_file_at=}")
         return parsed_switch_file_at
+
+    def _mk_iterator_for_datetime_args(self, _now: datetime = None) -> SwitchFileIterator:
+        start = end = _now or datetime.now(timezone.utc).astimezone()
+        for file_num, dt in enumerate(self._switch_file_at, start=1):
+            # for testing, new start is previous end, otherwise real time
+            start = end if _now else datetime.now(timezone.utc).astimezone()
+            # end is the entry from the list
+            end = dt
+            duration = end - start
+            yield file_num, start, end, duration
 
     def _mk_iterator_for_regular_args(self, _now: datetime = None) -> SwitchFileIterator:
         start = end = _now or datetime.now(timezone.utc).astimezone()
@@ -652,10 +737,15 @@ class SwitchFileDateTime:
             yield file_num, start, end, duration
 
 
-if __name__ == '__main__':
+def run_record_or_play():
     for arg in sys.argv:
         if arg.startswith('--record='):
             Macmarrum357().record()
             break
     else:  # no break
         Macmarrum357().play()
+
+
+if __name__ == '__main__':
+    configure_logging()
+    run_record_or_play()
