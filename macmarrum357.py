@@ -223,7 +223,7 @@ class Macmarrum357:
     e.g. adding `--end=60:00 --mute=yes --stream-record=output.aac`
     will quietly record 60 minutes of the stream to output.aac
 
-    Alternatively, `--record='{"output_dir": "/path/to/directory", "switch_file_at":"[6, 9, 12]"}'
+    Alternatively, `--record='{"output_dir": "/path/to/directory", "switch_file_times":"[6, 9, 12]"}'
     """
     STREAM = 'https://stream.radio357.pl/'
     REDCDN_LIVE = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
@@ -445,13 +445,13 @@ class Macmarrum357:
         self.start_recording(**record_args)
 
     def start_recording(self, output_dir: str | Path = None, filename: str | Callable | None = None,
-                        switch_file_at: Sequence[str | int | datetime] = ('*:00', '00:00'),
+                        switch_file_times: Sequence[str | int | datetime] = ('*:00', '00:00'),
                         on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None):
         """
         :param output_dir: path to the output directory; if missing: current working directory
-        :param filename: file name or a callable to create it based on switch_file_at date/time;
+        :param filename: file name or a callable to create it based on switch_file_times date/time;
          if missing: mk_filename(...) which returns `%Y-%m-%d,%a_%H.aac`, based on start time
-        :param switch_file_at: a sequence of time spec `HH:MM:SS`, e.g. ('6:00', '9:00', '12:00'),
+        :param switch_file_times: a sequence of time spec `HH:MM:SS`, e.g. ('6:00', '9:00', '12:00'),
          the last one meaning stop; special syntax exists to switch file every hour (`*`),
          e.g. when run at 6:00, the following ('*:00', '9:00') will produce 3 1-hour files: 6:00, 7:00 and 8:00
         :param on_file_start: command to spawn at each file switch, after starting a file;
@@ -467,7 +467,7 @@ class Macmarrum357:
         if filename is None:
             filename = mk_filename
 
-        switch_file_datetime = SwitchFileDateTime(switch_file_at)
+        switch_file_datetime = SwitchFileDateTime(switch_file_times)
         count = switch_file_datetime.count
         switch_file_datetime_iterator = switch_file_datetime.iterator
 
@@ -605,42 +605,42 @@ class SwitchFileDateTime:
     RX_H_MM_SS = re.compile(r'^(\*|\d{1,2})(:\d{1,2}){0,2}$')
     FMT = '%H:%M:%S'
 
-    def __init__(self, switch_file_at: Sequence[str | int | datetime]):
+    def __init__(self, switch_file_times: Sequence[str | int | datetime]):
         self._is_all_datetime = None
-        self._switch_file_at = switch_file_at
-        sfa_for_log = [e.strftime(self.FMT) for e in switch_file_at] if self.is_all_datetime else switch_file_at
-        macmarrum_log.debug(f"SwitchFileDateTime switch_file_at={sfa_for_log}")
+        self._switch_file_times = switch_file_times
+        sft_for_log = [e.strftime(self.FMT) for e in switch_file_times] if self.is_all_datetime else switch_file_times
+        macmarrum_log.debug(f"SwitchFileDateTime switch_file_times={sft_for_log}")
         self._is_every_hour = None
         self._validate()
-        self._parsed_switch_file_at = None
+        self._parsed_switch_file_times = None
         self._count = None
 
     def _validate(self):
-        switch_file_at = self._switch_file_at
-        switch_file_at_len = len(switch_file_at)
-        assert switch_file_at_len > 0, f"expected size > 0, got {switch_file_at_len}"
+        switch_file_times = self._switch_file_times
+        switch_file_times_len = len(switch_file_times)
+        assert switch_file_times_len > 0, f"expected size > 0, got {switch_file_times_len}"
         if self.is_every_hour:
-            assert switch_file_at_len == 2, f"expected size == 2, got {switch_file_at_len}"
-        assert self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_at)
+            assert switch_file_times_len == 2, f"expected size == 2, got {switch_file_times_len}"
+        assert self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times)
 
     @property
     def is_all_datetime(self):
         if self._is_all_datetime is None:
-            self._is_all_datetime = all(isinstance(elem, datetime) for elem in self._switch_file_at)
+            self._is_all_datetime = all(isinstance(elem, datetime) for elem in self._switch_file_times)
         return self._is_all_datetime
 
     @property
     def is_every_hour(self):
         if self._is_every_hour is None:
-            elem0 = self._switch_file_at[0]
+            elem0 = self._switch_file_times[0]
             self._is_every_hour = isinstance(elem0, str) and elem0.startswith('*')
         return self._is_every_hour
 
     @property
-    def parsed_switch_file_at(self):
-        if self._parsed_switch_file_at is None:
+    def parsed_switch_file_times(self):
+        if self._parsed_switch_file_times is None:
             self._parse()
-        return self._parsed_switch_file_at
+        return self._parsed_switch_file_times
 
     @property
     def iterator(self):
@@ -676,8 +676,8 @@ class SwitchFileDateTime:
         return self._count
 
     def _parse(self):
-        parsed_switch_file_at = []
-        for elem in self._switch_file_at:
+        parsed_switch_file_times = []
+        for elem in self._switch_file_times:
             if isinstance(elem, int):
                 h = elem
                 m = s = 0
@@ -697,14 +697,14 @@ class SwitchFileDateTime:
                 h = None if h == '*' else int(h)
                 m = int(m)
                 s = int(s)
-            parsed_switch_file_at.append((h, m, s))
-        self._parsed_switch_file_at = parsed_switch_file_at
-        macmarrum_log.debug(f"SwitchFileDateTime {parsed_switch_file_at=}")
-        return parsed_switch_file_at
+            parsed_switch_file_times.append((h, m, s))
+        self._parsed_switch_file_times = parsed_switch_file_times
+        macmarrum_log.debug(f"SwitchFileDateTime {parsed_switch_file_times=}")
+        return parsed_switch_file_times
 
     def _mk_iterator_for_datetime_args(self, _now: datetime = None) -> SwitchFileIterator:
         start = end = _now or datetime.now(timezone.utc).astimezone()
-        for file_num, dt in enumerate(self._switch_file_at, start=1):
+        for file_num, dt in enumerate(self._switch_file_times, start=1):
             # for testing, new start is previous end, otherwise real time
             start = end if _now else datetime.now(timezone.utc).astimezone()
             # end is the entry from the list
@@ -716,7 +716,7 @@ class SwitchFileDateTime:
         start = end = _now or datetime.now(timezone.utc).astimezone()
         file_num = 0
         h_m_s: tuple[int | None, int, int]
-        for i, h_m_s in enumerate(self.parsed_switch_file_at):
+        for i, h_m_s in enumerate(self.parsed_switch_file_times):
             # for testing, new start is previous end, otherwise real time
             start = end if _now else datetime.now(timezone.utc).astimezone()
             # end is the entry from the list
@@ -730,8 +730,8 @@ class SwitchFileDateTime:
 
     def _mk_iterator_for_asterisk_arg0(self, _now: datetime = None) -> SwitchFileIterator:
         start = _now or datetime.now(timezone.utc).astimezone()
-        h, m, s = self.parsed_switch_file_at[0]
-        final_h, final_m, final_s = self.parsed_switch_file_at[1]
+        h, m, s = self.parsed_switch_file_times[0]
+        final_h, final_m, final_s = self.parsed_switch_file_times[1]
         final_end = start.replace(hour=final_h, minute=final_m, second=final_s, microsecond=0)
         if final_end < start:
             final_end += self.DAYS1
