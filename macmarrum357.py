@@ -9,6 +9,7 @@ import logging.config
 import os
 import pickle
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -174,6 +175,10 @@ def mk_mozilla_cookie_csv(cookie: Cookie, sep: str = ' '):
 
 def mk_filename(start: datetime, end: datetime, duration: timedelta, file_num: int, count: int):
     return f"{start.strftime('%Y-%m-%d,%a_%H')}.aac"
+
+
+def quote(x):
+    return shlex.quote(x)
 
 
 class c:
@@ -399,9 +404,6 @@ class Macmarrum357:
         return self.session.post(url, headers=headers, json=credentials)
 
     def run_mpv(self):
-        def quote(x):
-            return f'"{x}"'
-
         mpv = self.conf.get(c.MPV_COMMAND, 'mpv')
         mpv_args = self.conf.get(c.MPV_OPTIONS, [])
         ae_headers = ','.join(f"'{k}: {v}'" for k, v in self.AE_HEADERS.items())
@@ -418,7 +420,10 @@ class Macmarrum357:
                 ]
         macmarrum_log.debug(f"RUN [{' '.join(quote(a) for a in args)}]")
         try:
-            subprocess.run(args)
+            with subprocess.run(args, stderr=subprocess.PIPE) as proc:
+                # Note: all stderr is logged at one go, after the command finishes
+                for b_line in proc.stderr.read().splitlines(keepends=False):
+                    macmarrum_log.warning(b_line.decode(UTF8))
         except FileNotFoundError as e:
             macmarrum_log.critical(f"'mpv_command' might be missing or incorrect in {self.config_json_path}")
             raise
@@ -486,8 +491,11 @@ class Macmarrum357:
                         args = [mpv_command, *mpv_options, f"appending://{path}"]
                     else:
                         args = [on_file_start, str(path)]
-                    macmarrum_log.info(f"SPAWN {args}")
-                    return subprocess.Popen(args).pid
+                    macmarrum_log.debug(f"SPAWN [{' '.join(quote(a) for a in args)}]")
+                    with subprocess.Popen(args, stderr=subprocess.PIPE) as proc:
+                        # Note: all stderr is logged at one go, after the command finishes
+                        for b_line in proc.stderr.read().splitlines(keepends=False):
+                            macmarrum_log.warning(b_line.decode(UTF8))
 
         def spawn_on_file_end_if_requested(path):
             if on_file_end is not None:
@@ -495,11 +503,11 @@ class Macmarrum357:
                     on_file_end(path)
                 else:
                     args = [on_file_end, str(path)]
-                    macmarrum_log.info(f"SPAWN {args}")
+                    macmarrum_log.info(f"SPAWN [{' '.join(quote(a) for a in args)}]")
                     with subprocess.Popen(args, stderr=subprocess.PIPE) as proc:
                         # Note: all stderr is logged at one go, after the command finishes
                         for b_line in proc.stderr.read().splitlines(keepends=False):
-                            macmarrum_log.debug(b_line.decode(UTF8))
+                            macmarrum_log.warning(b_line.decode(UTF8))
 
         self.run_periodic_token_refresh_thread()
         sleep_if_requested(self.init_datetime)
