@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import threading
+import traceback
 from collections.abc import Callable, Sequence, Iterator
 from datetime import datetime, timedelta, timezone
 from http.cookiejar import MozillaCookieJar, CookieJar, Cookie
@@ -418,8 +419,11 @@ class Macmarrum357:
         macmarrum_log.debug(f"RUN [{' '.join(quote(a) for a in args)}]")
         try:
             subprocess.run(args)
-        except FileNotFoundError:
-            macmarrum_log.error(f"'mpv_command' might be missing or incorrect in {self.config_json_path}")
+        except FileNotFoundError as e:
+            macmarrum_log.critical(f"'mpv_command' might be missing or incorrect in {self.config_json_path}")
+            raise
+        except Exception as e:
+            macmarrum_log.critical(f"{type(e).__name__} {e} {traceback.format_exc()}")
             raise
         finally:
             self.is_playing_or_recoding = False
@@ -537,6 +541,9 @@ class Macmarrum357:
                         spawn_on_file_start_if_requested(file_path)
             if fo and not fo.closed:
                 fo.close()
+        except Exception as e:
+            macmarrum_log.critical(f"{type(e).__name__} {e} {traceback.format_exc()}")
+            raise
         finally:
             self.is_playing_or_recoding = False
 
