@@ -59,7 +59,7 @@ LOGGING_CONFIG_DEFAULT = {
     },
     "formatters": {
         "formatter": {
-            "format": "{asctime} {levelname:5} {name:22} | {message}",
+            "format": "{asctime} {levelname:7} {name:22} {threadShort} | {message}",
             "style": "{",
             "validate": True
         }
@@ -126,6 +126,10 @@ def mk_hide_urllib3_reply_https_filter():
     return should_log_record
 
 
+thread_name_to_short = {}
+thread_short_gen = (f"{i}" for i in range(0, 9999))
+
+
 def configure_logging():
     if not logging_json_path.exists():
         with logging_json_path.open('w') as fo:
@@ -138,6 +142,18 @@ def configure_logging():
     if http_client_log.level == logging.DEBUG:
         http.client.HTTPConnection.debuglevel = 1
         http.client.print = lambda *args: http_client_log.debug(' '.join(args))
+
+    old_factory = logging.getLogRecordFactory()
+
+    def record_factory(*args, **kwargs):
+        record = old_factory(*args, **kwargs)
+        thread_name = record.threadName
+        if thread_name not in thread_name_to_short:
+            thread_name_to_short[thread_name] = next(thread_short_gen)
+        record.threadShort = thread_name_to_short.get(thread_name)
+        return record
+
+    logging.setLogRecordFactory(record_factory)
 
 
 def sleep_if_requested(start_time: datetime | None = None):
@@ -492,10 +508,7 @@ class Macmarrum357:
                     else:
                         args = [on_file_start, str(path)]
                     macmarrum_log.debug(f"SPAWN [{' '.join(quote(a) for a in args)}]")
-                    with subprocess.Popen(args, stderr=subprocess.PIPE) as proc:
-                        # Note: all stderr is logged at one go, after the command finishes
-                        for b_line in proc.stderr.read().splitlines(keepends=False):
-                            macmarrum_log.warning(b_line.decode(UTF8))
+                    subprocess.Popen(args)
 
         def spawn_on_file_end_if_requested(path):
             if on_file_end is not None:
@@ -504,10 +517,7 @@ class Macmarrum357:
                 else:
                     args = [on_file_end, str(path)]
                     macmarrum_log.info(f"SPAWN [{' '.join(quote(a) for a in args)}]")
-                    with subprocess.Popen(args, stderr=subprocess.PIPE) as proc:
-                        # Note: all stderr is logged at one go, after the command finishes
-                        for b_line in proc.stderr.read().splitlines(keepends=False):
-                            macmarrum_log.warning(b_line.decode(UTF8))
+                    subprocess.Popen(args)
 
         self.run_periodic_token_refresh_thread()
         sleep_if_requested(self.init_datetime)
