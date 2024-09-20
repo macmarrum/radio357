@@ -4,9 +4,10 @@
 
 Odtwarza Radio 357 na żywo, jako zalogowany użytkownik, z pominięciem komunikatu startowego.
 
-Loguje użytkownika, pobiera ciasteczka i używa ich do odtwarzania strumienia przez **mpv**.
+Loguje użytkownika, pobiera ciasteczka i używa ich do odtwarzania strumienia przy pomocy **mpv**.
 
-Czeka określoną ilość sekund przed włączeniem **mpv**, jeżeli `--sleep SECONDS` jest podane w wierszu poleceń.
+Opcjonalnie czeka określoną ilość sekund przed włączeniem **mpv**,
+jeżeli `--sleep SECONDS` jest podane w wierszu poleceń.
 
 Przekazuje wszystkie argumenty wiersza polecenia do **mpv**, 
 żeby **macmarrum357** mógł być używany zamiennie z **mpv**.\
@@ -17,13 +18,13 @@ zapisze bezgłośnie 60 minut strumienia do `output.aac`.
 ### Konfiguracja
 
 Email oraz hasło do logowania na https://konto.radio357.pl muszą być podane w\
-`%APPDATA%/macmarrum357.json` – na Windows\
+`%APPDATA%\macmarrum357\config.json` – na Windows\
 lub\
-`~/.config/macmarrum357.json` – na Unix.
+`~/.config/macmarrum357/config.json` – na Unix.
 
 W tym samym pliku można podać ścieżkę do **mpv** oraz opcje programu:\
 `"mpv_command" : "C:\\Program Files\\mpv\\mpv.exe"`\
-`"mpv_options": ["--force-window=immediate"]`\
+`"mpv_options": ["--force-window=immediate", "--cache-secs=1", "--fs=no"]`\
 Gdy brak `mpv_command`, **macmarrum357** szuka **mpv** w `PATH`.
 
 ### Wymagania systemowe
