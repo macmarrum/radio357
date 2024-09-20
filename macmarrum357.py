@@ -278,7 +278,6 @@ class Macmarrum357:
                     self.persist_cookies_if_changed()
                 else:
                     resp.raise_for_status()
-            resp.close()
             sleep_if_requested()
             self.spawn_mpv()
             self.run_periodic_token_refresh_thread()
