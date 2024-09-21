@@ -270,17 +270,6 @@ class Macmarrum357():
             c.PASSWORD), f"{self.config_json_path} is missing email and/or password values"
         self.conf = conf
 
-    async def parse_record_and_run_client(self):
-        args_as_json = None
-        for arg in sys.argv:
-            if arg.startswith('--record='):
-                args_as_json = arg.removeprefix('--record=')
-                break
-        macmarrum_log.debug(f"{args_as_json=}")
-        record_args = json.loads(args_as_json)
-        macmarrum_log.debug(f"{record_args=}")
-        await self.run_client(**record_args)
-
     async def run_client(self, output_dir: str | Path = None, filename: str | Callable | None = None,
                          switch_file_times: Sequence[str | int | datetime] = None,
                          on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None):
@@ -772,22 +761,41 @@ class SwitchFileDateTime:
             yield file_num, start, end, duration
 
 
-async def run_macmarrum357(app: web.Application):
-    macmarrum357 = app['macmarrum357']
+def get_record_kwargs():
     for arg in sys.argv:
         if arg.startswith('--record='):
-            run_client = macmarrum357.parse_record_and_run_client
+            args_as_json = arg.removeprefix('--record=')
+            macmarrum_log.debug(f"{args_as_json=}")
+            record_args = json.loads(args_as_json)
+            macmarrum_log.debug(f"{record_args=}")
+            return record_args
+    return {}
+
+
+def spawn_player_if_requested(macmarrum357, host, port):
+    for arg in sys.argv:
+        if arg.startswith('--play-with='):
+            player = arg.removeprefix('--play-with=')
+            player_cmd = shlex.split(player)
+            break
+        elif arg == '--play' and (mpv_command := macmarrum357.conf.get(c.MPV_COMMAND)):
+            mpv_options = macmarrum357.conf.get(c.MPV_OPTIONS, [])
+            player_cmd = [mpv_command, *mpv_options, f"http://{host}:{port}"]
             break
     else:  # no break
-        run_client = macmarrum357.run_client
-    await run_client()
+        player_cmd = None
+    if player_cmd:
+        macmarrum_log.info(f"spawn_player_if_requested {' '.join(quote(a) for a in player_cmd)}")
+        subprocess.Popen(player_cmd)
 
 
 async def macmarrum357_cleanup_ctx(app: web.Application):
     """https://docs.aiohttp.org/en/stable/web_advanced.html#aiohttp-web-cleanup-ctx
     a code before yield is an initialization stage (called on startup), a code after yield is executed on cleanup.
     """
-    live_stream_client_task = asyncio.create_task(run_macmarrum357(app))
+    macmarrum357 = app['macmarrum357']
+    kwargs = app['macmarrum357.run_client_kwargs']
+    live_stream_client_task = asyncio.create_task(macmarrum357.run_client(**kwargs))
     yield
     live_stream_client_task.cancel()
     await live_stream_client_task
@@ -801,23 +809,20 @@ def main():
     """Run Macmarrum357 (live-stream client) and a live-stream server app"""
     # https://docs.aiohttp.org/en/stable/web_advanced.html#background-tasks
     configure_logging()
+    record_kwargs = get_record_kwargs()
     live_stream_server_app = web.Application()
     macmarrum357 = Macmarrum357(live_stream_server_app)
     live_stream_server_app['macmarrum357'] = macmarrum357
+    live_stream_server_app['macmarrum357.run_client_kwargs'] = record_kwargs
     live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
     live_stream_server_app.on_shutdown.append(on_web_app_shutdown)
     live_stream_server_app.add_routes([
         web.get('/', macmarrum357.handle_request_live),
         web.get('/rec', macmarrum357.handle_request_rec)
     ])
-    for arg in sys.argv:
-        if arg.startswith('--player='):
-            player = arg.removeprefix('--player=')
-            player_cmd = shlex.split(player)
-            subprocess.Popen(player_cmd)
-            break
     host = macmarrum357.conf.get(c.HOST, 'localhost')
     port = macmarrum357.conf.get(c.PORT, 8357)
+    spawn_player_if_requested(macmarrum357, host, port)
     web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log.debug)
 
 
