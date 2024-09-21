@@ -222,15 +222,17 @@ class Macmarrum357():
     HANDLER_START_BUFFER_SEC = 1.0
     QUEUE_MAX_LEN = 9
     QUEUE_COUNT_LIMIT = 99
+    ITER_REC_CHUNK_SIZE = 8 * 1024
+    ITER_REC_WAIT_SECS_FOR_DATA = 1
     config_json_path = macmarrum357_path / 'config.json'
     cookies_pickle_path = macmarrum357_path / 'cookies.pickle'
     cookies_txt_path = macmarrum357_path / 'cookies.txt'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
 
     def __init__(self, web_app: web.Application = None):
-        self.web_app = web_app
         self.init_datetime = datetime.now(timezone.utc).astimezone()
-        macmarrum_log.debug(f"Macmarrum357() {self.init_datetime.date().isoformat()}")
+        self.web_app = web_app
+        macmarrum_log.debug(f"START Macmarrum357")
         self.conf = {}
         self.load_config()
         self.is_cookies_changed = False
@@ -239,6 +241,7 @@ class Macmarrum357():
         self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
         self._consumer_queues: list[asyncio.Queue] = []
         self.has_consumers = False
+        self.file_path: Path = None
 
     def register_stream_consumer_to_get_queue(self):
         queue, q = next(self.queue_gen)
@@ -328,8 +331,8 @@ class Macmarrum357():
                     resp.raise_for_status()
                     break
             if should_record:
-                file_path, fo, num, end_dt = await self.start_file_out(*start_file_out_args)
-                self.spawn_on_file_start_if_requested(on_file_start, file_path)
+                self.file_path, fo, num, end_dt = await self.start_file_out(*start_file_out_args)
+                self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
             async for chunk in resp.content.iter_chunked(self.ITER_CHUNK_SIZE):
                 if self.has_consumers:
                     for queue in self._consumer_queues:
@@ -338,9 +341,9 @@ class Macmarrum357():
                     await fo.write(chunk)
                     if end_dt and datetime.now(timezone.utc) >= end_dt:
                         await fo.close()
-                        self.spawn_on_file_end_if_requested(on_file_end, file_path)
+                        self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
                         try:
-                            file_path, fo, num, end_dt = await self.start_file_out(*start_file_out_args)
+                            self.file_path, fo, num, end_dt = await self.start_file_out(*start_file_out_args)
                         except RuntimeError as e:
                             # https://docs.python.org/3/library/exceptions.html#StopIteration
                             if isinstance(e.__cause__, StopIteration):
@@ -349,7 +352,7 @@ class Macmarrum357():
                             else:
                                 raise
                         else:
-                            self.spawn_on_file_start_if_requested(on_file_start, file_path)
+                            self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
         except Exception as e:
             macmarrum_log.critical(f"{type(e).__name__} {e} {traceback.format_exc()}")
             raise
@@ -528,10 +531,9 @@ class Macmarrum357():
         self.session.cookie_jar.update_cookies(name_to_cookie[c.REFRESH_TOKEN_EXPIRES], response_url=url)
         self.is_cookies_changed = True
 
-    async def handle_client_request(self, request: web.Request):
+    async def handle_request_live(self, request: web.Request):
         queue, q = self.register_stream_consumer_to_get_queue()
-        web_log.debug(f"handle_client_request queue #{q} - {request.remote} {request.method} {request.path}"
-                      f" {request.version} {request.headers.get(c.USER_AGENT)}")
+        web_log.debug(f"handle_request_live queue #{q} - {request.remote} {request.method} {request.path} {request.version} {request.headers.get(c.USER_AGENT)}")
         server_resp = web.Response(content_type=c.AUDIO_AAC)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
@@ -542,7 +544,7 @@ class Macmarrum357():
             while (duration := monotonic() - t) < self.HANDLER_START_BUFFER_SEC:
                 buffer += await queue.get()
                 i += 1
-            web_log.debug(f"handle_client_request queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+            web_log.debug(f"handle_request_live queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         while True:
             if buffer:
                 chunk = buffer
@@ -556,6 +558,47 @@ class Macmarrum357():
                 self.unregister_stream_consumer(queue, q)
                 break
         return server_resp
+
+    async def handle_request_rec(self, request: web.Request):
+        web_log.debug(f"handle_request_rec - {request.remote} {request.method} {request.path} {request.version} {request.headers.get(c.USER_AGENT)}")
+        server_resp = web.Response(content_type=c.AUDIO_AAC)
+        server_resp.enable_chunked_encoding()
+        await server_resp.prepare(request)
+        is_file_path = self.file_path is not None
+        if is_file_path:
+            web_log.debug(f"handle_request_rec from {self.file_path.name}")
+            async with aiofiles.open(self.file_path, 'rb') as fi:
+                while chunk := await fi.read(self.ITER_REC_CHUNK_SIZE):
+                    try:
+                        await server_resp.write(chunk)
+                    except (ConnectionResetError, Exception) as e:
+                        web_log.debug(f"{type(e).__name__}: {e}")
+                        return server_resp
+        queue, q = self.register_stream_consumer_to_get_queue()
+        if not is_file_path:
+            web_log.warning(f"handle_request_rec - no file - was --record= used?")
+        buffer = b''
+        if not is_file_path and self.HANDLER_START_BUFFER_SEC:
+            i = 0
+            t = monotonic()
+            while (duration := monotonic() - t) < self.HANDLER_START_BUFFER_SEC:
+                buffer += await queue.get()
+                i += 1
+            web_log.debug(f"handle_request_rec queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+        else:
+            web_log.debug(f"handle_request_rec from queue #{q}")
+        while True:
+            if buffer:
+                chunk = buffer
+                buffer = b''
+            else:
+                chunk = await queue.get()
+            try:
+                await server_resp.write(chunk)
+            except (ConnectionResetError, Exception) as e:
+                web_log.debug(f"{type(e).__name__}: {e}")
+                self.unregister_stream_consumer(queue, q)
+                return server_resp
 
 
 def mk_simple_cookie(name: str, value: str, expires: str):
@@ -763,7 +806,10 @@ def main():
     live_stream_server_app['macmarrum357'] = macmarrum357
     live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
     live_stream_server_app.on_shutdown.append(on_web_app_shutdown)
-    live_stream_server_app.add_routes([web.get('/', macmarrum357.handle_client_request), ])
+    live_stream_server_app.add_routes([
+        web.get('/', macmarrum357.handle_request_live),
+        web.get('/rec', macmarrum357.handle_request_rec)
+    ])
     for arg in sys.argv:
         if arg.startswith('--player='):
             player = arg.removeprefix('--player=')
@@ -772,7 +818,7 @@ def main():
             break
     host = macmarrum357.conf.get(c.HOST, 'localhost')
     port = macmarrum357.conf.get(c.PORT, 8357)
-    web.run_app(app=live_stream_server_app, host=host, port=port, print=None)
+    web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log.debug)
 
 
 if __name__ == '__main__':
