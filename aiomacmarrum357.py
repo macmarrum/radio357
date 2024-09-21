@@ -213,6 +213,7 @@ class c:
 class Macmarrum357():
     STREAM = 'https://stream.radio357.pl/'
     REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
+    LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
     USER_AGENT = 'macmarrum/357'
     UA_HEADERS = {c.USER_AGENT: USER_AGENT}
     AE_HEADERS = {c.ACCEPT: c.AUDIO_AAC, c.ACCEPT_ENCODING: c.IDENTITY}
@@ -238,6 +239,7 @@ class Macmarrum357():
         self.is_cookies_changed = False
         self.is_playing_or_recoding = False
         self.session: aiohttp.ClientSession = None
+        self.location_replacements = self.conf.get('live_stream_location_replacements', self.LOCATION_REPLACEMENTS)
         self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
         self._consumer_queues: list[asyncio.Queue] = []
         self.has_consumers = False
@@ -309,39 +311,72 @@ class Macmarrum357():
                 if resp and not resp.closed:
                     resp.close()
                 resp = await self.session.get(url, headers=headers, allow_redirects=False)
-                redirect_url = resp.headers.get(c.LOCATION)
-                if redirect_url:
-                    macmarrum_log.debug(f"location: {redirect_url}")
-                    url = redirect_url
-                    if url == self.REDCDN_LIVE_NO_PREROLL:
-                        macmarrum_log.debug('### url += ?preroll=0')
-                        url += '?preroll=0'
+                location = resp.headers.get(c.LOCATION)
+                if location:
+                    macmarrum_log.debug(f"location: {location}")
+                    if replacement := self.location_replacements.get(location):
+                        macmarrum_log.debug(f"replace location to {replacement}")
+                        location = replacement
+                    url = location
                 else:
                     resp.raise_for_status()
                     break
             if should_record:
                 self.file_path, fo, num, end_dt = await self.start_file_out(*start_file_out_args)
                 self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
-            async for chunk in resp.content.iter_chunked(self.ITER_CHUNK_SIZE):
-                if self.has_consumers:
-                    for queue in self._consumer_queues:
-                        await queue.put(chunk)
-                if should_record:
-                    await fo.write(chunk)
-                    if end_dt and datetime.now(timezone.utc) >= end_dt:
-                        await fo.close()
-                        self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
-                        try:
-                            self.file_path, fo, num, end_dt = await self.start_file_out(*start_file_out_args)
-                        except RuntimeError as e:
-                            # https://docs.python.org/3/library/exceptions.html#StopIteration
-                            if isinstance(e.__cause__, StopIteration):
-                                macmarrum_log.debug(f"{type(e).__name__} caused by {type(e.__cause__).__name__} -> break")
-                                break
+
+            async def iter_chunked(_resp, _fo, _end_dt):
+                async for chunk in _resp.content.iter_chunked(self.ITER_CHUNK_SIZE):
+                    if self.has_consumers:
+                        for queue in self._consumer_queues:
+                            await queue.put(chunk)
+                    if should_record:
+                        await _fo.write(chunk)
+                        if _end_dt and datetime.now(timezone.utc) >= _end_dt:
+                            await _fo.close()
+                            self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
+                            try:
+                                self.file_path, _fo, num, _end_dt = await self.start_file_out(*start_file_out_args)
+                            except RuntimeError as e:
+                                # https://docs.python.org/3/library/exceptions.html#StopIteration
+                                if isinstance(e.__cause__, StopIteration):
+                                    macmarrum_log.debug(f"{type(e).__name__} caused by {type(e.__cause__).__name__} -> break")
+                                    raise
+                                else:
+                                    raise
                             else:
-                                raise
-                        else:
-                            self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+                                self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+
+            i = 0
+            while True:
+                try:
+                    await iter_chunked(resp, fo, end_dt)
+                except Exception as e:
+                    if isinstance(e.__cause__, StopIteration):
+                        break
+                    else:
+                        macmarrum_log.error(f"{type(e).__name__} {e}")
+                        i += 1
+                        sec = 0
+                        if i > 5:
+                            sec = 1
+                        elif i > 10:
+                            sec = 5
+                        elif i > 20:
+                            sec = 30
+                        elif i > 30:
+                            sec = 60
+                        elif i > 40:
+                            sec = 300
+                        elif i > 50:
+                            sec = 600
+                        elif i > 60:
+                            sec = 3600
+                        if sec:
+                            macmarrum_log.debug(f"sleeping {sec}")
+                            await asyncio.sleep(sec)
+                        macmarrum_log.debug(f"retrying {url} {headers}")
+                        resp = await self.session.get(url, headers=headers)
         except Exception as e:
             macmarrum_log.critical(f"{type(e).__name__} {e} {traceback.format_exc()}")
             raise
