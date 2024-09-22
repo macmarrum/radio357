@@ -593,7 +593,7 @@ class Macmarrum357():
                 break
         return server_resp
 
-    async def handle_request_rec(self, request: web.Request):
+    async def handle_request_file_then_live(self, request: web.Request):
         web_log.debug(f"handle_request_rec - {request.remote} {request.method} {request.path} {request.version} {request.headers.get(c.USER_AGENT)}")
         server_resp = web.Response(content_type=c.AUDIO_AAC)
         server_resp.enable_chunked_encoding()
@@ -825,7 +825,7 @@ def spawn_player_if_requested(macmarrum357, host, port):
             break
         elif arg == '--play' and (mpv_command := macmarrum357.conf.get(c.MPV_COMMAND)):
             mpv_options = macmarrum357.conf.get(c.MPV_OPTIONS, [])
-            player_cmd = [mpv_command, *mpv_options, f"http://{host}:{port}"]
+            player_cmd = [mpv_command, *mpv_options, f"http://{host}:{port}/live"]
             break
     else:  # no break
         player_cmd = None
@@ -862,8 +862,8 @@ def main():
     live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
     live_stream_server_app.on_shutdown.append(on_web_app_shutdown)
     live_stream_server_app.add_routes([
-        web.get('/', macmarrum357.handle_request_live),
-        web.get('/rec', macmarrum357.handle_request_rec)
+        web.get('/live', macmarrum357.handle_request_live),
+        web.get('/file-then-live', macmarrum357.handle_request_file_then_live)
     ])
     host = macmarrum357.conf.get(c.HOST, 'localhost')
     port = macmarrum357.conf.get(c.PORT, 8357)
