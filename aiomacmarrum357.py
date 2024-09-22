@@ -228,6 +228,7 @@ class Macmarrum357():
     config_json_path = macmarrum357_path / 'config.json'
     cookies_pickle_path = macmarrum357_path / 'cookies.pickle'
     cookies_txt_path = macmarrum357_path / 'cookies.txt'
+    OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
 
     def __init__(self, web_app: web.Application = None):
@@ -298,11 +299,12 @@ class Macmarrum357():
             switch_file_datetime = SwitchFileDateTime(switch_file_times)
             count = switch_file_datetime.count
             switch_file_datetime_iter = switch_file_datetime.mk_iter()
-            start_file_out_args = (output_dir, filename, switch_file_datetime_iter, count)
+            start_output_file_args = (output_dir, filename, switch_file_datetime_iter, count)
 
         await sleep_if_requested(self.init_datetime)
         resp = None
         fo = None
+        end_dt = None
         try:
             url = self.conf.get(c.STREAM_URL, self.STREAM)
             headers = self.UA_HEADERS | self.AE_HEADERS
@@ -322,7 +324,7 @@ class Macmarrum357():
                     resp.raise_for_status()
                     break
             if should_record:
-                self.file_path, fo, num, end_dt = await self.start_file_out(*start_file_out_args)
+                self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args)
                 self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
 
             async def iter_chunked(_resp, _fo, _end_dt):
@@ -336,7 +338,7 @@ class Macmarrum357():
                             await _fo.close()
                             self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
                             try:
-                                self.file_path, _fo, num, _end_dt = await self.start_file_out(*start_file_out_args)
+                                self.file_path, _fo, num, _end_dt = await self.start_output_file(*start_output_file_args)
                             except RuntimeError as e:
                                 # https://docs.python.org/3/library/exceptions.html#StopIteration
                                 if isinstance(e.__cause__, StopIteration):
@@ -353,25 +355,29 @@ class Macmarrum357():
                     await iter_chunked(resp, fo, end_dt)
                 except Exception as e:
                     if isinstance(e.__cause__, StopIteration):
+                        macmarrum_log.debug('End of switch_file_times - exiting')
                         break
                     else:
                         macmarrum_log.error(f"{type(e).__name__} {e}")
                         i += 1
-                        sec = 0
-                        if i > 5:
-                            sec = 1
-                        elif i > 10:
-                            sec = 5
-                        elif i > 20:
-                            sec = 30
-                        elif i > 30:
-                            sec = 60
-                        elif i > 40:
-                            sec = 300
+                        if i > 60:
+                            sec = 3600
                         elif i > 50:
                             sec = 600
-                        elif i > 60:
-                            sec = 3600
+                        elif i > 40:
+                            sec = 300
+                        elif i > 30:
+                            sec = 60
+                        elif i > 20:
+                            sec = 30
+                        elif i > 10:
+                            sec = 5
+                        elif i > 5:
+                            sec = 2
+                        elif i > 1:
+                            sec = 1
+                        else:
+                            sec = 0
                         if sec:
                             macmarrum_log.debug(f"sleeping {sec}")
                             await asyncio.sleep(sec)
@@ -394,11 +400,12 @@ class Macmarrum357():
                 await self.web_app.cleanup()
 
     @classmethod
-    async def start_file_out(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int):
+    async def start_output_file(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int):
         file_num, start, end, duration = next(switch_file_datetime_iterator)
         output_path = Path(output_dir) / filename(start=start, end=end, duration=duration, file_num=file_num,
                                                   count=count) if callable(filename) else filename
-        while output_path.exists():
+        is_filename_changed = False
+        while 'a' not in cls.OUTPUT_FILE_MODE and output_path.exists():
             old_path = output_path
             stem = output_path.stem
             m = cls.RX_TILDA_NUM.search(stem)
@@ -409,8 +416,11 @@ class Macmarrum357():
                 new_stem = f"{stem}~1"
             output_path = output_path.with_stem(new_stem)
             macmarrum_log.warning(f"File exists: {old_path}. Changing to {new_stem}{output_path.suffix}")
+            is_filename_changed = True
+        if not is_filename_changed and 'a' in cls.OUTPUT_FILE_MODE and output_path.exists():
+            macmarrum_log.warning(f"Appending to an exiting file {output_path}")
         macmarrum_log.info(f"RECORD {file_num}/{count} {duration} to {output_path}")
-        fo = await aiofiles.open(output_path, 'wb')
+        fo = await aiofiles.open(output_path, cls.OUTPUT_FILE_MODE)
         return output_path, fo, file_num, end
 
     def spawn_on_file_start_if_requested(self, on_file_start, path):
