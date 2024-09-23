@@ -831,11 +831,12 @@ def spawn_player_if_requested(macmarrum357, host, port):
             break
         elif arg == '--play' and (mpv_command := macmarrum357.conf.get(c.MPV_COMMAND)):
             mpv_options = macmarrum357.conf.get(c.MPV_OPTIONS, [])
-            player_cmd = [mpv_command, *mpv_options, f"http://{host}:{port}/live"]
+            player_cmd = [mpv_command, *mpv_options]
             break
     else:  # no break
         player_cmd = None
     if player_cmd:
+        player_cmd.append(f"http://{host}:{port}/live")
         macmarrum_log.info(f"spawn_player_if_requested {' '.join(quote(a) for a in player_cmd)}")
         subprocess.Popen(player_cmd)
 
