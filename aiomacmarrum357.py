@@ -9,6 +9,7 @@ import json
 import logging.config
 import os
 import re
+import selectors
 import shlex
 import subprocess
 import sys
@@ -49,10 +50,10 @@ LOGGING_CONFIG_DEFAULT = {
     "version": 1,
     "filters": {
         "hide_reply_header": {
-            "()": "macmarrum357.mk_hide_reply_header_filter"
+            "()": "aiomacmarrum357.mk_hide_reply_header_filter"
         },
         "hide_urllib3_reply_https": {
-            "()": "macmarrum357.mk_hide_urllib3_reply_https_filter"
+            "()": "aiomacmarrum357.mk_hide_urllib3_reply_https_filter"
         }
     },
     "formatters": {
@@ -85,7 +86,7 @@ LOGGING_CONFIG_DEFAULT = {
             ]
         },
         "aiohttp": {
-            "level": "DEBUG",
+            "level": "INFO",
             "handlers": [
                 "to_console",
                 "to_file"
@@ -281,7 +282,12 @@ class Macmarrum357():
 
         # https://github.com/netblue30/fdns/issues/47
         if nameservers := self.conf.get(c.NAMESERVERS):
-            connector = aiohttp.TCPConnector(resolver=AsyncResolver(nameservers=nameservers))
+            macmarrum_log.debug(f"using nameservers {nameservers}")
+            try:
+                connector = aiohttp.TCPConnector(resolver=AsyncResolver(nameservers=nameservers))
+            except Exception as e:
+                macmarrum_log.error(f"{type(e).__name__} {e}")
+                raise
         else:
             connector = None
         # https://github.com/aio-libs/aiohttp/issues/3203
@@ -868,6 +874,14 @@ def main():
     host = macmarrum357.conf.get(c.HOST, 'localhost')
     port = macmarrum357.conf.get(c.PORT, 8357)
     spawn_player_if_requested(macmarrum357, host, port)
+    if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
+        class MyPolicy(asyncio.DefaultEventLoopPolicy):
+
+            def new_event_loop(self):
+                selector = selectors.SelectSelector()
+                return asyncio.SelectorEventLoop(selector)
+
+        asyncio.set_event_loop_policy(MyPolicy())
     web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log.debug)
 
 
