@@ -148,23 +148,17 @@ def configure_logging():
 
 async def sleep_if_requested(start_time: datetime | None = None):
     sleep_sec = 0
-    if '--sleep' in sys.argv:
-        k = None
-        for i, a in enumerate(sys.argv):
-            if a == '--sleep':
-                k = i
-                break
-        sleep_sec = float(sys.argv[k + 1])
-        # remove --sleep SECONDS
-        del sys.argv[k + 1]
-        del sys.argv[k]
+    for arg in sys.argv:
+        if arg.startswith('--sleep='):
+            sleep_sec = float(arg.removeprefix('--sleep='))
     if sleep_sec:
         if start_time is None:
+            macmarrum_log.info(f"sleep for {sleep_sec} before starting a player")
             await asyncio.sleep(sleep_sec)
         else:
             end_time = start_time + timedelta(seconds=sleep_sec)
             sleep_interval = min(sleep_sec / 100, 0.5)
-            macmarrum_log.info(f"sleeping for {sleep_sec} seconds, until {end_time.isoformat(sep=' ')}")
+            macmarrum_log.info(f"sleep for {sleep_sec} seconds, until {end_time.isoformat(sep=' ')}, before starting a player")
             while datetime.now(timezone.utc) < end_time:
                 await asyncio.sleep(sleep_interval)
 
@@ -307,7 +301,6 @@ class Macmarrum357():
             switch_file_datetime_iter = switch_file_datetime.mk_iter()
             start_output_file_args = (output_dir, filename, switch_file_datetime_iter, count)
 
-        await sleep_if_requested(self.init_datetime)
         resp = None
         fo = None
         end_dt = None
@@ -819,7 +812,7 @@ def get_record_kwargs():
     return {}
 
 
-def spawn_player_if_requested(macmarrum357, host, port):
+async def spawn_player_with_delay_if_requested(macmarrum357, host, port):
     for arg in sys.argv:
         if arg.startswith('--play-with='):
             player = arg.removeprefix('--play-with=')
@@ -834,6 +827,7 @@ def spawn_player_if_requested(macmarrum357, host, port):
     else:  # no break
         player_cmd = None
     if player_cmd:
+        await sleep_if_requested()
         player_cmd.append(f"http://{host}:{port}/live")
         macmarrum_log.info(f"spawn_player {' '.join(quote(a) for a in player_cmd)}")
         subprocess.Popen(player_cmd)
@@ -846,8 +840,13 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     macmarrum357 = app['macmarrum357']
     kwargs = app['macmarrum357.run_client_kwargs']
     live_stream_client_task = asyncio.create_task(macmarrum357.run_client(**kwargs))
+    host = app['macmarrum357.host']
+    port = app['macmarrum357.port']
+    player_task = asyncio.create_task(spawn_player_with_delay_if_requested(macmarrum357, host, port))
     yield
+    player_task.cancel()
     live_stream_client_task.cancel()
+    await player_task
     await live_stream_client_task
 
 
@@ -872,7 +871,8 @@ def main():
     ])
     host = macmarrum357.conf.get(c.HOST, 'localhost')
     port = macmarrum357.conf.get(c.PORT, 8357)
-    spawn_player_if_requested(macmarrum357, host, port)
+    live_stream_server_app['macmarrum357.host'] = host
+    live_stream_server_app['macmarrum357.port'] = port
     if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
         class MyPolicy(asyncio.DefaultEventLoopPolicy):
 
