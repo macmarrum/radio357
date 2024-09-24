@@ -801,6 +801,12 @@ class SwitchFileDateTime:
             yield file_num, start, end, duration
 
 
+class MyPolicy(asyncio.DefaultEventLoopPolicy):
+    def new_event_loop(self):
+        selector = selectors.SelectSelector()
+        return asyncio.SelectorEventLoop(selector)
+
+
 def get_record_kwargs():
     for arg in sys.argv:
         if arg.startswith('--record='):
@@ -874,12 +880,6 @@ def main():
     live_stream_server_app['macmarrum357.host'] = host
     live_stream_server_app['macmarrum357.port'] = port
     if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
-        class MyPolicy(asyncio.DefaultEventLoopPolicy):
-
-            def new_event_loop(self):
-                selector = selectors.SelectSelector()
-                return asyncio.SelectorEventLoop(selector)
-
         asyncio.set_event_loop_policy(MyPolicy())
     web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log.debug)
 
