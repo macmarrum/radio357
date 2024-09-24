@@ -345,13 +345,9 @@ class Macmarrum357():
                             self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
                             try:
                                 self.file_path, _fo, num, _end_dt = await self.start_output_file(*start_output_file_args)
-                            except RuntimeError as e:
+                            except (StopIteration, RuntimeError):
                                 # https://docs.python.org/3/library/exceptions.html#StopIteration
-                                if isinstance(e.__cause__, StopIteration):
-                                    macmarrum_log.debug(f"{type(e).__name__} caused by {type(e.__cause__).__name__} -> break")
-                                    raise
-                                else:
-                                    raise
+                                raise
                             else:
                                 self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
 
@@ -485,7 +481,7 @@ class Macmarrum357():
         _5m_as_seconds = 5 * 60
 
         async def refresh_token_in_a_loop():
-            token_log.debug('refresh_token_in_a_loop (wait until it\'s time)')
+            token_log.debug('refresh_token_in_a_loop (sleep until it\'s time)')
             if time() > self.get_cookie(c.R357_PID).expires - _24h_as_seconds:
                 await self.init_r357_and_set_cookies_changed_if_needed(token_log)
             expires = self.get_cookie(c.TOKEN).expires
@@ -533,13 +529,13 @@ class Macmarrum357():
             refresh_token = self.get_cookie(c.REFRESH_TOKEN).value
             headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
             _json = {c.REFRESHTOKEN: refresh_token}
-            logger.debug(f"refresh token {headers=} {_json=}")
+            logger.debug(f"refresh_token {headers=} {_json=}")
             async with self.session.post(url, headers=headers, json=_json) as resp:
                 if resp.status == 200:
-                    logger.debug(f"refresh token {resp.status}")
+                    logger.debug(f"refresh_token {resp.status}")
                     await self.update_and_persist_tokens_from_resp(resp, logger)
                 else:
-                    logger.debug(f"refresh token {resp.status}")
+                    logger.debug(f"refresh_token {resp.status}")
                     is_to_login = True
         if is_to_login:
             logger.debug('login')
@@ -839,7 +835,7 @@ def spawn_player_if_requested(macmarrum357, host, port):
         player_cmd = None
     if player_cmd:
         player_cmd.append(f"http://{host}:{port}/live")
-        macmarrum_log.info(f"spawn_player_if_requested {' '.join(quote(a) for a in player_cmd)}")
+        macmarrum_log.info(f"spawn_player {' '.join(quote(a) for a in player_cmd)}")
         subprocess.Popen(player_cmd)
 
 
