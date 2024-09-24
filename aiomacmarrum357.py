@@ -827,7 +827,9 @@ def spawn_player_if_requested(macmarrum357, host, port):
     for arg in sys.argv:
         if arg.startswith('--play-with='):
             player = arg.removeprefix('--play-with=')
-            player_cmd = shlex.split(player)
+            player_cmd = json.loads(player)
+            if not isinstance(player_cmd, list):
+                player_cmd = [player_cmd]
             break
         elif arg == '--play' and (mpv_command := macmarrum357.conf.get(c.MPV_COMMAND)):
             mpv_options = macmarrum357.conf.get(c.MPV_OPTIONS, [])
