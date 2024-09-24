@@ -337,7 +337,7 @@ class Macmarrum357():
                 async for chunk in _resp.content.iter_chunked(self.ITER_CHUNK_SIZE):
                     if self.has_consumers:
                         for queue in self._consumer_queues:
-                            await queue.put(chunk)
+                            queue.put_nowait(chunk)
                     if should_record:
                         await _fo.write(chunk)
                         if _end_dt and datetime.now(timezone.utc) >= _end_dt:
