@@ -172,7 +172,8 @@ def quote(x):
 
 
 class c:
-    STREAM_URL = 'stream_url'
+    LIVE_STREAM_URL = 'live_stream_url'
+    LIVE_STREAM_LOCATION_REPLACEMENTS = 'live_stream_location_replacements'
     EMAIL = 'email'
     PASSWORD = 'password'
     NAMESERVERS = 'nameservers'
@@ -240,7 +241,7 @@ class Macmarrum357():
         self.is_cookies_changed = False
         self.is_playing_or_recoding = False
         self.session: aiohttp.ClientSession = None
-        self.location_replacements = self.conf.get('live_stream_location_replacements', self.LOCATION_REPLACEMENTS)
+        self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.LOCATION_REPLACEMENTS)
         self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
         self._consumer_queues: list[asyncio.Queue] = []
         self.has_consumers = False
@@ -311,7 +312,7 @@ class Macmarrum357():
         fo = None
         end_dt = None
         i = 0
-        url = self.conf.get(c.STREAM_URL, self.STREAM)
+        url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
         headers = self.UA_HEADERS | self.AE_HEADERS
         while True:
             try:
