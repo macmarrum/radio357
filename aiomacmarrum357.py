@@ -163,8 +163,8 @@ async def sleep_if_requested(start_time: datetime | None = None):
                 await asyncio.sleep(sleep_interval)
 
 
-def mk_filename(start: datetime, end: datetime, duration: timedelta, file_num: int, count: int):
-    return f"{start.strftime('%Y-%m-%d,%a_%H')}.aac"
+def mk_filename(start: datetime, end: datetime, duration: timedelta, file_num: int, count: int, suffix: str):
+    return f"{start.strftime('%Y-%m-%d,%a_%H')}{suffix}"
 
 
 def quote(x):
@@ -200,6 +200,9 @@ class c:
     ACCEPT_ENCODING = 'Accept-Encoding'
     LOCATION = 'location'
     AUDIO_AAC = 'audio/aac'
+    CONTENT_TYPE = 'Content-Type'
+    AUDIO_MPEG = 'audio/mpeg'
+    AUDIO_ASTERISK = 'audio/*'
     IDENTITY = 'identity'
     HOST = 'host'
     PORT = 'port'
@@ -211,11 +214,12 @@ class Macmarrum357():
     LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
     USER_AGENT = 'macmarrum/357'
     UA_HEADERS = {c.USER_AGENT: USER_AGENT}
-    AE_HEADERS = {c.ACCEPT: c.AUDIO_AAC, c.ACCEPT_ENCODING: c.IDENTITY}
+    AE_HEADERS = {c.ACCEPT: f"{c.AUDIO_AAC},{c.AUDIO_MPEG}", c.ACCEPT_ENCODING: c.IDENTITY}
     ACCEPT_JSON_HEADERS = {c.ACCEPT: c.APPLICATION_JSON}
     TOKEN_VALIDITY_DELTA = timedelta(minutes=60)
     ITER_CHUNK_SIZE = 4 * 1024
     HANDLER_START_BUFFER_SEC = 1.0
+    HANDLER_CONTENT_TYPE_WAIT_MAX_ITER = 5_000
     QUEUE_MAX_LEN = 9
     QUEUE_COUNT_LIMIT = 99
     ITER_REC_CHUNK_SIZE = 8 * 1024
@@ -225,6 +229,7 @@ class Macmarrum357():
     cookies_txt_path = macmarrum357_path / 'cookies.txt'
     OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
+    CONTENT_TYPE_TO_SUFFIX = {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3', c.AUDIO_ASTERISK: '.audio'}
 
     def __init__(self, web_app: web.Application = None):
         self.init_datetime = datetime.now(timezone.utc).astimezone()
@@ -240,6 +245,7 @@ class Macmarrum357():
         self._consumer_queues: list[asyncio.Queue] = []
         self.has_consumers = False
         self.file_path: Path = None
+        self.content_type = None
 
     def register_stream_consumer_to_get_queue(self):
         queue, q = next(self.queue_gen)
@@ -304,101 +310,94 @@ class Macmarrum357():
         resp = None
         fo = None
         end_dt = None
-        try:
-            url = self.conf.get(c.STREAM_URL, self.STREAM)
-            headers = self.UA_HEADERS | self.AE_HEADERS
-            macmarrum_log.debug(f"url {url}")
-            while True:  # handle redirects
-                if resp and not resp.closed:
-                    resp.close()
-                resp = await self.session.get(url, headers=headers, allow_redirects=False)
-                location = resp.headers.get(c.LOCATION)
-                if location:
-                    macmarrum_log.debug(f"location: {location}")
-                    if replacement := self.location_replacements.get(location):
-                        macmarrum_log.debug(f"replace location to {replacement}")
-                        location = replacement
-                    url = location
-                else:
-                    resp.raise_for_status()
-                    break
-            if should_record:
-                self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args)
-                self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
-
-            async def iter_chunked(_resp, _fo, _end_dt):
-                async for chunk in _resp.content.iter_chunked(self.ITER_CHUNK_SIZE):
+        i = 0
+        url = self.conf.get(c.STREAM_URL, self.STREAM)
+        headers = self.UA_HEADERS | self.AE_HEADERS
+        while True:
+            try:
+                if fo and not fo.closed:
+                    await fo.close()
+                macmarrum_log.debug(f"get {url} {headers}")
+                while True:  # handle redirects
+                    if resp and not resp.closed:
+                        resp.close()
+                    resp = await self.session.get(url, headers=headers, allow_redirects=False)
+                    location = resp.headers.get(c.LOCATION)
+                    if location:
+                        macmarrum_log.debug(f"location: {location}")
+                        if replacement := self.location_replacements.get(location):
+                            macmarrum_log.debug(f"replace location to {replacement}")
+                            location = replacement
+                        url = location
+                    else:
+                        resp.raise_for_status()
+                        self.content_type = resp.headers.get(c.CONTENT_TYPE, c.AUDIO_ASTERISK)
+                        break
+                if should_record:
+                    suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
+                    self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
+                    self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+                async for chunk in resp.content.iter_chunked(self.ITER_CHUNK_SIZE):
                     if self.has_consumers:
                         for queue in self._consumer_queues:
                             queue.put_nowait(chunk)
                     if should_record:
-                        await _fo.write(chunk)
-                        if _end_dt and datetime.now(timezone.utc) >= _end_dt:
-                            await _fo.close()
+                        await fo.write(chunk)
+                        if end_dt and datetime.now(timezone.utc) >= end_dt:
+                            await fo.close()
                             self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
-                            try:
-                                self.file_path, _fo, num, _end_dt = await self.start_output_file(*start_output_file_args)
-                            except (StopIteration, RuntimeError):
-                                # https://docs.python.org/3/library/exceptions.html#StopIteration
-                                raise
-                            else:
-                                self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
-
-            i = 0
-            while True:
-                try:
-                    await iter_chunked(resp, fo, end_dt)
-                except Exception as e:
-                    if isinstance(e.__cause__, StopIteration):
-                        macmarrum_log.debug('End of switch_file_times - exiting')
-                        break
+                            self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
+                            self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+            except asyncio.queues.QueueFull as e:
+                macmarrum_log.error(f"{type(e).__name__} {e}")
+                break
+            except Exception as e:
+                # https://docs.python.org/3/library/exceptions.html#StopIteration
+                if isinstance(e, RuntimeError) and isinstance(e.__cause__, StopIteration):
+                    macmarrum_log.debug('End of switch_file_times - exiting')
+                    break
+                else:
+                    macmarrum_log.error(f"{type(e).__name__} {e} {traceback.format_exc()}")
+                    i += 1
+                    if i > 60:
+                        sec = 3600
+                    elif i > 50:
+                        sec = 600
+                    elif i > 40:
+                        sec = 300
+                    elif i > 30:
+                        sec = 60
+                    elif i > 20:
+                        sec = 30
+                    elif i > 10:
+                        sec = 5
+                    elif i > 5:
+                        sec = 2
+                    elif i > 1:
+                        sec = 1
                     else:
-                        macmarrum_log.error(f"{type(e).__name__} {e}")
-                        i += 1
-                        if i > 60:
-                            sec = 3600
-                        elif i > 50:
-                            sec = 600
-                        elif i > 40:
-                            sec = 300
-                        elif i > 30:
-                            sec = 60
-                        elif i > 20:
-                            sec = 30
-                        elif i > 10:
-                            sec = 5
-                        elif i > 5:
-                            sec = 2
-                        elif i > 1:
-                            sec = 1
-                        else:
-                            sec = 0
-                        if sec:
-                            macmarrum_log.debug(f"sleeping {sec}")
-                            await asyncio.sleep(sec)
-                        macmarrum_log.debug(f"retrying {url} {headers}")
-                        resp = await self.session.get(url, headers=headers)
-        except Exception as e:
-            macmarrum_log.critical(f"{type(e).__name__} {e} {traceback.format_exc()}")
-            raise
-        finally:
-            if resp and not resp.closed:
-                resp.close()
-            if not self.session.closed:
-                await self.session.close()
-            if fo and not fo.closed:
-                await fo.close()
-            self.is_playing_or_recoding = False
-            await run_periodic_token_refresh_task
-            if self.web_app:
-                await self.web_app.shutdown()
-                await self.web_app.cleanup()
+                        sec = 0
+                    if sec:
+                        macmarrum_log.debug(f"sleeping {sec} before retrying")
+                        await asyncio.sleep(sec)
+        # end while
+        if resp and not resp.closed:
+            resp.close()
+        if not self.session.closed:
+            await self.session.close()
+        if fo and not fo.closed:
+            await fo.close()
+        self.is_playing_or_recoding = False
+        await run_periodic_token_refresh_task
+        if self.web_app:
+            await self.web_app.shutdown()
+            await self.web_app.cleanup()
 
     @classmethod
-    async def start_output_file(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int):
+    async def start_output_file(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int, suffix: str):
         file_num, start, end, duration = next(switch_file_datetime_iterator)
         output_path = Path(output_dir) / filename(start=start, end=end, duration=duration, file_num=file_num,
-                                                  count=count) if callable(filename) else filename
+                                                  count=count, suffix=suffix) if callable(filename) else filename
         is_filename_changed = False
         while 'a' not in cls.OUTPUT_FILE_MODE and output_path.exists():
             old_path = output_path
@@ -563,7 +562,13 @@ class Macmarrum357():
     async def handle_request_live(self, request: web.Request):
         queue, q = self.register_stream_consumer_to_get_queue()
         web_log.debug(f"handle_request_live queue #{q} - {request.remote} {request.method} {request.path} {request.version} {request.headers.get(c.USER_AGENT)}")
-        server_resp = web.Response(content_type=c.AUDIO_AAC)
+        i = 0
+        while self.content_type is None:
+            if (i := i + 1) > self.HANDLER_CONTENT_TYPE_WAIT_MAX_ITER:
+                break
+            await asyncio.sleep(0.01)
+        web_log.debug(f"handle_request_live content_type {self.content_type} after {i} iterations")
+        server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
         buffer = b''
@@ -589,13 +594,19 @@ class Macmarrum357():
         return server_resp
 
     async def handle_request_file_then_live(self, request: web.Request):
-        web_log.debug(f"handle_request_rec - {request.remote} {request.method} {request.path} {request.version} {request.headers.get(c.USER_AGENT)}")
-        server_resp = web.Response(content_type=c.AUDIO_AAC)
+        web_log.debug(f"handle_request_file_then_live - {request.remote} {request.method} {request.path} {request.version} {request.headers.get(c.USER_AGENT)}")
+        i = 0
+        while self.content_type is None:
+            if (i := i + 1) > self.HANDLER_CONTENT_TYPE_WAIT_MAX_ITER:
+                break
+            await asyncio.sleep(0.01)
+        web_log.debug(f"handle_request_file_then_live content_type {self.content_type} after {i} iterations")
+        server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
         is_file_path = self.file_path is not None
         if is_file_path:
-            web_log.debug(f"handle_request_rec from {self.file_path.name}")
+            web_log.debug(f"handle_request_file_then_live from {self.file_path.name}")
             async with aiofiles.open(self.file_path, 'rb') as fi:
                 while chunk := await fi.read(self.ITER_REC_CHUNK_SIZE):
                     try:
@@ -605,7 +616,7 @@ class Macmarrum357():
                         return server_resp
         queue, q = self.register_stream_consumer_to_get_queue()
         if not is_file_path:
-            web_log.warning(f"handle_request_rec - no file - was --record= used?")
+            web_log.warning(f"handle_request_file_then_live - no file - was --record= used?")
         buffer = b''
         if not is_file_path and self.HANDLER_START_BUFFER_SEC:
             i = 0
@@ -613,9 +624,9 @@ class Macmarrum357():
             while (duration := monotonic() - t) < self.HANDLER_START_BUFFER_SEC:
                 buffer += await queue.get()
                 i += 1
-            web_log.debug(f"handle_request_rec queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+            web_log.debug(f"handle_request_file_then_live queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         else:
-            web_log.debug(f"handle_request_rec from queue #{q}")
+            web_log.debug(f"handle_request_file_then_live from queue #{q}")
         while True:
             if buffer:
                 chunk = buffer
