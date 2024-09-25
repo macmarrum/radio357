@@ -295,6 +295,7 @@ class Macmarrum357():
         # https://stackoverflow.com/questions/61199544/dealing-with-aiohttp-session-get-timeout-issues-for-large-amout-of-requests
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
         self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
+        await self.refresh_or_login(macmarrum_log)
         run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
 
         if should_record:
@@ -318,7 +319,7 @@ class Macmarrum357():
             try:
                 if fo and not fo.closed:
                     await fo.close()
-                macmarrum_log.debug(f"get {url} {headers}")
+                macmarrum_log.debug(f"get {url} {headers} {[ck for ck in self.session.cookie_jar]}")
                 while True:  # handle redirects
                     if resp and not resp.closed:
                         resp.close()
@@ -522,7 +523,7 @@ class Macmarrum357():
             refresh_token = self.get_cookie(c.REFRESH_TOKEN).value
             headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
             _json = {c.REFRESHTOKEN: refresh_token}
-            logger.debug(f"refresh_token {headers=} {_json=}")
+            logger.debug(f"refresh_token {url} {headers} {_json}")
             async with self.session.post(url, headers=headers, json=_json) as resp:
                 if resp.status == 200:
                     logger.debug(f"refresh_token {resp.status}")
@@ -531,10 +532,10 @@ class Macmarrum357():
                     logger.debug(f"refresh_token {resp.status}")
                     is_to_login = True
         if is_to_login:
-            logger.debug('login')
             url = 'https://auth.r357.eu/api/auth/login'
             credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
             headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
+            logger.debug(f"login {url} {headers} {credentials}")
             async with self.session.post(url, headers=headers, json=credentials) as resp:
                 if resp.status == 200:
                     logger.debug(f"login {resp.status}")
