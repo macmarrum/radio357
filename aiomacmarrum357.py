@@ -193,9 +193,7 @@ class c:
     DOMAIN = 'domain'
     PATH = 'path'
     SECURE = 'secure'
-    MPV_COMMAND = 'mpv_command'
-    MPV_OPTIONS = 'mpv_options'
-    CAPPING_TIMESTAMP = 'cappingTimestamp'
+    PLAYER_ARGS = 'player_args'
     ACCEPT = 'Accept'
     APPLICATION_JSON = 'application/json'
     ACCEPT_ENCODING = 'Accept-Encoding'
@@ -266,9 +264,7 @@ class Macmarrum357():
     def load_config(self):
         if not self.config_json_path.exists():
             with self.config_json_path.open('w') as fo:
-                conf = {c.EMAIL: '', c.PASSWORD: ''}
-                if os.name == 'nt':
-                    conf |= {c.MPV_COMMAND: 'mpv', c.MPV_OPTIONS: ['--force-window=immediate']}
+                conf = {c.EMAIL: '', c.PASSWORD: '', c.PLAYER_ARGS: ['mpv', '--force-window=immediate', '--fs=no']}
                 json.dump(conf, fo, indent=2)
         else:
             with self.config_json_path.open('r') as fi:
@@ -434,17 +430,13 @@ class Macmarrum357():
         fo = await aiofiles.open(output_path, cls.OUTPUT_FILE_MODE)
         return output_path, fo, file_num, end
 
-    def spawn_on_file_start_if_requested(self, on_file_start, path):
+    @staticmethod
+    def spawn_on_file_start_if_requested(on_file_start, path):
         if on_file_start is not None:
             if callable(on_file_start):
                 on_file_start(path)
             else:
-                if on_file_start == 'mpv_command':
-                    mpv_command = self.conf.get(c.MPV_COMMAND, 'mpv')
-                    mpv_options = self.conf.get(c.MPV_OPTIONS, [])
-                    args = [mpv_command, *mpv_options, f"appending://{path}"]
-                else:
-                    args = [on_file_start, str(path)]
+                args = [on_file_start, str(path)]
                 macmarrum_log.debug(f"SPAWN [{' '.join(quote(a) for a in args)}]")
                 subprocess.Popen(args)
 
@@ -850,21 +842,19 @@ async def spawn_player_with_delay_if_requested(macmarrum357, host, port):
     for arg in sys.argv:
         if arg.startswith('--play-with='):
             player = arg.removeprefix('--play-with=')
-            player_cmd = json.loads(player)
-            if not isinstance(player_cmd, list):
-                player_cmd = [player_cmd]
+            player_args = json.loads(player)
+            if not isinstance(player_args, list):
+                player_args = [player_args]
             break
-        elif arg == '--play' and (mpv_command := macmarrum357.conf.get(c.MPV_COMMAND)):
-            mpv_options = macmarrum357.conf.get(c.MPV_OPTIONS, [])
-            player_cmd = [mpv_command, *mpv_options]
+        elif arg == '--play' and (player_args := macmarrum357.conf.get(c.PLAYER_ARGS)):
             break
     else:  # no break
-        player_cmd = None
-    if player_cmd:
+        player_args = None
+    if player_args:
         await sleep_if_requested()
-        player_cmd.append(f"http://{host}:{port}/live")
-        macmarrum_log.info(f"spawn_player {' '.join(quote(a) for a in player_cmd)}")
-        subprocess.Popen(player_cmd)
+        player_args.append(f"http://{host}:{port}/live")
+        macmarrum_log.info(f"spawn_player {' '.join(quote(a) for a in player_args)}")
+        subprocess.Popen(player_args)
 
 
 async def macmarrum357_cleanup_ctx(app: web.Application):
