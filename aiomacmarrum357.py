@@ -203,7 +203,7 @@ class c:
     AUDIO_AAC = 'audio/aac'
     CONTENT_TYPE = 'Content-Type'
     AUDIO_MPEG = 'audio/mpeg'
-    AUDIO_ASTERISK = 'audio/*'
+    APPLICATION_OCTET_STREAM = 'application/octet-stream'
     IDENTITY = 'identity'
     HOST = 'host'
     PORT = 'port'
@@ -230,7 +230,7 @@ class Macmarrum357():
     cookies_txt_path = macmarrum357_path / 'cookies.txt'
     OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
-    CONTENT_TYPE_TO_SUFFIX = {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3', c.AUDIO_ASTERISK: '.audio'}
+    CONTENT_TYPE_TO_SUFFIX = {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3', c.APPLICATION_OCTET_STREAM: '.bin'}
 
     def __init__(self, web_app: web.Application = None):
         self.init_datetime = datetime.now(timezone.utc).astimezone()
@@ -333,7 +333,7 @@ class Macmarrum357():
                         url = location
                     else:
                         resp.raise_for_status()
-                        self.content_type = resp.headers.get(c.CONTENT_TYPE, c.AUDIO_ASTERISK)
+                        self.content_type = resp.headers.get(c.CONTENT_TYPE, c.APPLICATION_OCTET_STREAM)
                         break
                 if should_record:
                     suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
