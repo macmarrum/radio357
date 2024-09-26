@@ -205,6 +205,7 @@ class c:
     IDENTITY = 'identity'
     HOST = 'host'
     PORT = 'port'
+    HANDLER_START_BUFFER_SEC = 'handler_start_buffer_sec'
 
 
 class Macmarrum357():
@@ -282,7 +283,7 @@ class Macmarrum357():
 
         # https://github.com/netblue30/fdns/issues/47
         if nameservers := self.conf.get(c.NAMESERVERS):
-            macmarrum_log.debug(f"using nameservers {nameservers}")
+            macmarrum_log.debug(f"use nameservers {nameservers}")
             try:
                 connector = aiohttp.TCPConnector(resolver=AsyncResolver(nameservers=nameservers))
             except Exception as e:
@@ -581,10 +582,11 @@ class Macmarrum357():
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
         buffer = b''
-        if self.HANDLER_START_BUFFER_SEC:
+        handler_start_buffer_sec = self.conf.get(c.HANDLER_START_BUFFER_SEC, self.HANDLER_START_BUFFER_SEC)
+        if handler_start_buffer_sec:
             i = 0
             t = monotonic()
-            while (duration := monotonic() - t) < self.HANDLER_START_BUFFER_SEC:
+            while (duration := monotonic() - t) < handler_start_buffer_sec:
                 buffer += await queue.get()
                 i += 1
             web_log.debug(f"handle_request_live queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
@@ -627,10 +629,11 @@ class Macmarrum357():
         if not is_file_path:
             web_log.warning(f"handle_request_file_then_live - no file - was --record= used?")
         buffer = b''
-        if not is_file_path and self.HANDLER_START_BUFFER_SEC:
+        handler_start_buffer_sec = self.conf.get(c.HANDLER_START_BUFFER_SEC, self.HANDLER_START_BUFFER_SEC)
+        if not is_file_path and handler_start_buffer_sec:
             i = 0
             t = monotonic()
-            while (duration := monotonic() - t) < self.HANDLER_START_BUFFER_SEC:
+            while (duration := monotonic() - t) < handler_start_buffer_sec:
                 buffer += await queue.get()
                 i += 1
             web_log.debug(f"handle_request_file_then_live queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
