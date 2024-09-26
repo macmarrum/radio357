@@ -221,8 +221,11 @@ class Macmarrum357():
     ITER_CHUNK_SIZE = 4 * 1024
     HANDLER_START_BUFFER_SEC = 1.0
     HANDLER_CONTENT_TYPE_WAIT_MAX_ITER = 5_000
+    HANDLER_CONTENT_TYPE_WAIT_SEC = 0.1
     QUEUE_MAX_LEN = 9
     QUEUE_COUNT_LIMIT = 99
+    QUEUE_FULL_MAX_PUT_ATTEMPTS = 5
+    QUEUE_FULL_SLEEP_SEC = 0.05
     ITER_REC_CHUNK_SIZE = 8 * 1024
     ITER_REC_WAIT_SECS_FOR_DATA = 1
     config_json_path = macmarrum357_path / 'config.json'
@@ -243,21 +246,21 @@ class Macmarrum357():
         self.session: aiohttp.ClientSession = None
         self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.LOCATION_REPLACEMENTS)
         self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
-        self._consumer_queues: list[asyncio.Queue] = []
+        self._consumer_queues: list[tuple[asyncio.Queue, int]] = []
         self.has_consumers = False
         self.file_path: Path = None
         self.content_type = None
 
     def register_stream_consumer_to_get_queue(self):
         queue, q = next(self.queue_gen)
-        self._consumer_queues.append(queue)
+        self._consumer_queues.append((queue, q))
         self.has_consumers = True
         macmarrum_log.debug(f"register_stream_consumer #{q}")
         return queue, q
 
     def unregister_stream_consumer(self, queue, q):
         macmarrum_log.debug(f"unregister_stream_consumer #{q}")
-        self._consumer_queues.remove(queue)
+        self._consumer_queues.remove((queue, q))
         self.has_consumers = len(self._consumer_queues) > 0
 
     def load_config(self):
@@ -326,7 +329,7 @@ class Macmarrum357():
                     resp = await self.session.get(url, headers=headers, allow_redirects=False)
                     location = resp.headers.get(c.LOCATION)
                     if location:
-                        macmarrum_log.debug(f"location: {location}")
+                        macmarrum_log.debug(f"{resp.status} - location: {location}")
                         if replacement := self.location_replacements.get(location):
                             macmarrum_log.debug(f"replace location to {replacement}")
                             location = replacement
@@ -341,8 +344,20 @@ class Macmarrum357():
                     self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
                 async for chunk in resp.content.iter_chunked(self.ITER_CHUNK_SIZE):
                     if self.has_consumers:
-                        for queue in self._consumer_queues:
-                            queue.put_nowait(chunk)
+                        for queue, q in self._consumer_queues:
+                            k = 0
+                            while True:
+                                try:
+                                    queue.put_nowait(chunk)
+                                    break
+                                except asyncio.queues.QueueFull as e:
+                                    k += 1
+                                    if k <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
+                                        macmarrum_log.debug(f"queue #{q} - {type(e).__name__} - put attempt {k} - sleeping {self.QUEUE_FULL_SLEEP_SEC} sec")
+                                        await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
+                                    else:
+                                        macmarrum_log.debug(f"queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - exiting")
+                                        raise
                     if should_record:
                         await fo.write(chunk)
                         if end_dt and datetime.now(timezone.utc) >= end_dt:
@@ -350,13 +365,12 @@ class Macmarrum357():
                             self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
                             self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
                             self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
-            except asyncio.queues.QueueFull as e:
-                macmarrum_log.error(f"{type(e).__name__} {e}")
+            except asyncio.queues.QueueFull:
                 break
             except Exception as e:
                 # https://docs.python.org/3/library/exceptions.html#StopIteration
                 if isinstance(e, RuntimeError) and isinstance(e.__cause__, StopIteration):
-                    macmarrum_log.debug('End of switch_file_times - exiting')
+                    macmarrum_log.debug('end of switch_file_times - exiting')
                     break
                 else:
                     macmarrum_log.error(f"{type(e).__name__} {e} {traceback.format_exc()}")
@@ -394,6 +408,7 @@ class Macmarrum357():
         if self.web_app:
             await self.web_app.shutdown()
             await self.web_app.cleanup()
+        macmarrum_log.debug(f"STOP Macmarrum357")
 
     @classmethod
     async def start_output_file(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int, suffix: str):
@@ -567,9 +582,9 @@ class Macmarrum357():
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.HANDLER_CONTENT_TYPE_WAIT_MAX_ITER:
+                web_log.debug(f"handle_request_live queue #{q} - content_type {self.content_type} - after {i} * {self.HANDLER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
-            await asyncio.sleep(0.01)
-        web_log.debug(f"handle_request_live content_type {self.content_type} after {i} iterations")
+            await asyncio.sleep(self.HANDLER_CONTENT_TYPE_WAIT_SEC)
         server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
@@ -580,7 +595,7 @@ class Macmarrum357():
             while (duration := monotonic() - t) < self.HANDLER_START_BUFFER_SEC:
                 buffer += await queue.get()
                 i += 1
-            web_log.debug(f"handle_request_live queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+            web_log.debug(f"handle_request_live queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         while True:
             if buffer:
                 chunk = buffer
@@ -600,9 +615,9 @@ class Macmarrum357():
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.HANDLER_CONTENT_TYPE_WAIT_MAX_ITER:
+                web_log.debug(f"handle_request_file_then_live - content_type {self.content_type} - after {i} * {self.HANDLER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
-            await asyncio.sleep(0.01)
-        web_log.debug(f"handle_request_file_then_live content_type {self.content_type} after {i} iterations")
+            await asyncio.sleep(self.HANDLER_CONTENT_TYPE_WAIT_SEC)
         server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
