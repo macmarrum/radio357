@@ -167,6 +167,8 @@ def quote(x):
 
 
 class c:
+    LIVE_STREAM_URL = 'live_stream_url'
+    LIVE_STREAM_LOCATION_REPLACEMENTS = 'live_stream_location_replacements'
     EMAIL = 'email'
     PASSWORD = 'password'
     USER_AGENT = 'User-Agent'
@@ -184,7 +186,10 @@ class c:
     ACCEPT = 'Accept'
     APPLICATION_JSON = 'application/json'
     ACCEPT_ENCODING = 'Accept-Encoding'
+    IDENTITY = 'identity'
     LOCATION = 'location'
+    AUDIO_AAC = 'audio/aac'
+    AUDIO_MPEG = 'audio/mpeg'
 
 
 class Macmarrum357:
@@ -208,13 +213,13 @@ class Macmarrum357:
     e.g. adding `--end=60:00 --mute=yes --stream-record=output.aac`
     will silently record 60 minutes of the stream to output.aac
     """
-    STREAM = 'https://stream.radio357.pl/'
+    STREAM = 'https://stream.radio357.pl/?s=www'
     REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
     LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
     USER_AGENT = 'macmarrum/357'
     TOKEN_VALIDITY_DELTA = timedelta(minutes=60)
     UA_HEADERS = {c.USER_AGENT: USER_AGENT}
-    AE_HEADERS = {c.ACCEPT: 'audio/aac', c.ACCEPT_ENCODING: 'identity'}
+    AE_HEADERS = {c.ACCEPT: f"{c.AUDIO_AAC},{c.AUDIO_MPEG}", c.ACCEPT_ENCODING: c.IDENTITY}
     ACCEPT_JSON_HEADERS = {c.ACCEPT: c.APPLICATION_JSON}
     config_json_path = macmarrum357_path / 'config.json'
     cookies_pickle_path = macmarrum357_path / 'cookies.pickle'
@@ -222,19 +227,22 @@ class Macmarrum357:
 
     def __init__(self):
         self.init_datetime = datetime.now(timezone.utc).astimezone()
-        macmarrum_log.info(f"Macmarrum357() {self.init_datetime.date().isoformat()}")
+        macmarrum_log.info(f"START Macmarrum357()")
         self.conf = {}
         self.load_config()
         self.session = requests.Session()
         self.load_cookies()
         self.is_cookies_changed = False
-        self.url = self.conf.get('live_stream_url', self.STREAM)
-        self.location_replacements = self.conf.get('live_stream_location_replacements', self.LOCATION_REPLACEMENTS)
+        self.url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
+        self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.LOCATION_REPLACEMENTS)
 
     def load_config(self):
         if not self.config_json_path.exists():
             with self.config_json_path.open('w') as fo:
-                conf = {c.EMAIL: '', c.PASSWORD: '', c.MPV_COMMAND: 'mpv', c.MPV_OPTIONS: ['--force-window=immediate', '--cache-secs=1', '--fs=no']}
+                conf = {c.EMAIL: '', c.PASSWORD: '',
+                        c.LIVE_STREAM_URL: self.STREAM,
+                        c.MPV_COMMAND: 'mpv', c.MPV_OPTIONS: ['--force-window=immediate', '--cache-secs=1', '--fs=no'],
+                        }
                 json.dump(conf, fo, indent=2)
         else:
             with self.config_json_path.open('r') as fi:
@@ -261,11 +269,12 @@ class Macmarrum357:
         try:
             self.refresh_or_login()
             headers = self.UA_HEADERS | self.AE_HEADERS
+            macmarrum_log.debug(f"live-stream {self.url} {headers}")
             while True:
-                macmarrum_log.debug(f"live-stream url {self.url}")
                 with self.session.get(self.url, headers=headers, stream=True, allow_redirects=False) as resp:
                     if resp.is_redirect:
                         location = resp.headers[c.LOCATION]
+                        macmarrum_log.debug(f"{resp.status_code} - location: {location}")
                         if replacement := self.location_replacements.get(location):
                             macmarrum_log.debug(f"replace location to {replacement}")
                             location = replacement
@@ -285,6 +294,7 @@ class Macmarrum357:
             pass
         finally:
             self.session.close()
+            macmarrum_log.info(f"STOP Macmarrum357()")
 
     def get_cookie(self, name):
         for cookie in self.session.cookies:
@@ -424,14 +434,14 @@ class Macmarrum357:
         mpv = self.conf.get(c.MPV_COMMAND, 'mpv')
         mpv_args = self.conf.get(c.MPV_OPTIONS, [])
         args = [Path(mpv).name,
-                self.url,
                 f"--user-agent={self.USER_AGENT}",
                 '--cookies=yes',
                 f"--cookies-file={self.cookies_txt_path}",
                 # add any args specified in macmarrum357.json
                 *mpv_args,
                 # add any args passed on the command line
-                *sys.argv[1:]
+                *sys.argv[1:],
+                self.url,
                 ]
         macmarrum_log.info(f"spawn_mpv: {' '.join(quote(a) for a in args)}")
         try:
