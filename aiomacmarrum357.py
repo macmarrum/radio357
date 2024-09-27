@@ -197,12 +197,12 @@ class c:
     ACCEPT = 'Accept'
     APPLICATION_JSON = 'application/json'
     ACCEPT_ENCODING = 'Accept-Encoding'
+    IDENTITY = 'identity'
     LOCATION = 'location'
     AUDIO_AAC = 'audio/aac'
     CONTENT_TYPE = 'Content-Type'
     AUDIO_MPEG = 'audio/mpeg'
     APPLICATION_OCTET_STREAM = 'application/octet-stream'
-    IDENTITY = 'identity'
     HOST = 'host'
     PORT = 'port'
     HANDLER_START_BUFFER_SEC = 'handler_start_buffer_sec'
@@ -324,8 +324,7 @@ class Macmarrum357():
                     if resp and not resp.closed:
                         resp.close()
                     resp = await self.session.get(url, headers=headers, allow_redirects=False)
-                    location = resp.headers.get(c.LOCATION)
-                    if location:
+                    if resp.status in [301, 302, 303, 307, 308] and (location := resp.headers.get(c.LOCATION)):
                         macmarrum_log.debug(f"{resp.status} - location: {location}")
                         if replacement := self.location_replacements.get(location):
                             macmarrum_log.debug(f"replace location to {replacement}")
