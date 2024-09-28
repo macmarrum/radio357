@@ -147,7 +147,7 @@ class c:
 
 
 class Macmarrum357():
-    STREAM = 'https://stream.radio357.pl/'
+    STREAM = 'https://stream.radio357.pl/?s=www'
     REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
     LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
     USER_AGENT = 'macmarrum/357'
@@ -165,9 +165,7 @@ class Macmarrum357():
     QUEUE_FULL_SLEEP_SEC = 0.05
     ITER_REC_CHUNK_SIZE = 8 * 1024
     ITER_REC_WAIT_SECS_FOR_DATA = 1
-    config_json_path = macmarrum357_path / 'config.json'
-    cookies_pickle_path = macmarrum357_path / 'cookies.pickle'
-    cookies_txt_path = macmarrum357_path / 'cookies.txt'
+    config_toml_path = macmarrum357_path / 'config.toml'
     OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
     CONTENT_TYPE_TO_SUFFIX = {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3', c.APPLICATION_OCTET_STREAM: '.bin'}
@@ -201,16 +199,21 @@ class Macmarrum357():
         self.has_consumers = len(self._consumer_queues) > 0
 
     def load_config(self):
-        if not self.config_json_path.exists():
-            with self.config_json_path.open('w') as fo:
-                conf = {c.EMAIL: '', c.PASSWORD: '', c.PLAYER_ARGS: ['mpv', '--force-window=immediate', '--fs=no']}
-                json.dump(conf, fo, indent=2)
+        if not self.config_toml_path.exists():
+            with self.config_toml_path.open('wb') as fo:
+                conf = {c.EMAIL: '', c.PASSWORD: '',
+                        c.LIVE_STREAM_URL: self.STREAM,
+                        # c.LIVE_STREAM_LOCATION_REPLACEMENTS: self.LOCATION_REPLACEMENTS,
+                        c.PLAYER_ARGS: ['mpv', '--force-window=immediate', '--fs=no']
+                        }
+                tomli_w.dump(conf, fo)
         else:
-            with self.config_json_path.open('r') as fi:
-                conf = json.load(fi)
-                macmarrum_log.debug(f"load_config {self.config_json_path.name} {conf}")
-        assert conf.get(c.EMAIL) and conf.get(
-            c.PASSWORD), f"{self.config_json_path} is missing email and/or password values"
+            with self.config_toml_path.open('rb') as fi:
+                conf = tomllib.load(fi)
+                macmarrum_log.debug(f"load_config {self.config_toml_path.name} {conf}")
+        if not conf.get(c.EMAIL) or not conf.get(c.PASSWORD):
+            macmarrum_log.critical(f"{self.config_toml_path} is missing email and/or password values")
+            sys.exit(f"brak email i/lub password w {self.config_toml_path}")
         self.conf = conf
 
     async def run_client(self, output_dir: str | Path = None, filename: str | Callable | None = None,
@@ -365,7 +368,7 @@ class Macmarrum357():
             macmarrum_log.warning(f"File exists: {old_path}. Changing to {new_stem}{output_path.suffix}")
             is_filename_changed = True
         if not is_filename_changed and 'a' in cls.OUTPUT_FILE_MODE and output_path.exists():
-            macmarrum_log.warning(f"Appending to an exiting file {output_path}")
+            macmarrum_log.warning(f"Append to an exiting file {output_path}")
         macmarrum_log.info(f"RECORD {file_num}/{count} {duration} to {output_path}")
         fo = await aiofiles.open(output_path, cls.OUTPUT_FILE_MODE)
         return output_path, fo, file_num, end
