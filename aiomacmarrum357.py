@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import asyncio
 import email.utils
-import http.client
 import json
 import logging.config
 import os
@@ -13,16 +12,22 @@ import selectors
 import shlex
 import subprocess
 import sys
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 import traceback
 from collections.abc import Iterator
 from datetime import datetime, timezone, timedelta
 from http.cookies import SimpleCookie
 from pathlib import Path
-from time import time, monotonic
+from time import time, monotonic, sleep
 from typing import Callable, Sequence
 
 import aiofiles
 import aiohttp
+import tomli_w
 import yarl
 from aiohttp import AsyncResolver, CookieJar, web
 from aiohttp.web_runner import GracefulExit
@@ -30,7 +35,6 @@ from aiohttp.web_runner import GracefulExit
 macmarrum_log = logging.getLogger('macmarrum357')
 token_log = logging.getLogger('macmarrum357.token')
 web_log = logging.getLogger('macmarrum357.web')
-http_client_log = logging.getLogger('http.client')
 
 
 def get_appdata() -> Path:
@@ -44,18 +48,10 @@ def get_appdata() -> Path:
 
 macmarrum357_path = get_appdata() / 'macmarrum357'
 macmarrum357_path.mkdir(exist_ok=True)
-logging_json_path = macmarrum357_path / 'logging.json'
+logging_toml_path = macmarrum357_path / 'logging.toml'
 
 LOGGING_CONFIG_DEFAULT = {
     "version": 1,
-    "filters": {
-        "hide_reply_header": {
-            "()": "aiomacmarrum357.mk_hide_reply_header_filter"
-        },
-        "hide_urllib3_reply_https": {
-            "()": "aiomacmarrum357.mk_hide_urllib3_reply_https_filter"
-        }
-    },
     "formatters": {
         "formatter": {
             "format": "{asctime} {levelname:7} {name:22} | {message}",
@@ -66,15 +62,13 @@ LOGGING_CONFIG_DEFAULT = {
     "handlers": {
         "to_console": {
             "class": "logging.StreamHandler",
-            "formatter": "formatter",
-            "filters": ["hide_urllib3_reply_https"]
+            "formatter": "formatter"
         },
         "to_file": {
             "class": "logging.FileHandler",
             "filename": "macmarrum357.log",
             "encoding": "UTF-8",
-            "formatter": "formatter",
-            "filters": ["hide_urllib3_reply_https"]
+            "formatter": "formatter"
         }
     },
     "loggers": {
@@ -92,75 +86,19 @@ LOGGING_CONFIG_DEFAULT = {
                 "to_file"
             ]
         },
-        "urllib3": {
-            "level": "INFO",
-            "handlers": [
-                "to_console",
-                "to_file"
-            ]
-        },
-        "http.client": {
-            "level": "INFO",
-            "filters": ["hide_reply_header"],
-            "handlers": [
-                "to_console",
-                "to_file"
-            ]
-        }
     }
 }
 
 
-def mk_hide_reply_header_filter():
-    def should_log_record(record: logging.LogRecord) -> bool:
-        return not record.msg.startswith('header: ')
-
-    return should_log_record
-
-
-def mk_hide_urllib3_reply_https_filter():
-    name = 'urllib3.connectionpool'
-    msg = '%s://%s:%s "%s %s %s" %s %s'
-
-    def should_log_record(record: logging.LogRecord) -> bool:
-        if record.name.startswith(name):
-            # print(f">> {record.msg}")
-            return not record.msg.startswith(msg)
-        else:
-            return True
-
-    return should_log_record
-
-
 def configure_logging():
-    if not logging_json_path.exists():
-        with logging_json_path.open('w') as fo:
-            json.dump(LOGGING_CONFIG_DEFAULT, fo, indent=2)
+    if not logging_toml_path.exists():
+        with logging_toml_path.open('wb') as fo:
+            tomli_w.dump(LOGGING_CONFIG_DEFAULT, fo)
             dict_config = LOGGING_CONFIG_DEFAULT
     else:
-        with logging_json_path.open('r') as fi:
-            dict_config = json.load(fi)
+        with logging_toml_path.open('rb') as fi:
+            dict_config = tomllib.load(fi)
     logging.config.dictConfig(dict_config)
-    if http_client_log.level == logging.DEBUG:
-        http.client.HTTPConnection.debuglevel = 1
-        http.client.print = lambda *args: http_client_log.debug(' '.join(args))
-
-
-async def sleep_if_requested(start_time: datetime | None = None):
-    sleep_sec = 0
-    for arg in sys.argv:
-        if arg.startswith('--sleep='):
-            sleep_sec = float(arg.removeprefix('--sleep='))
-    if sleep_sec:
-        if start_time is None:
-            macmarrum_log.info(f"sleep for {sleep_sec} before starting a player")
-            await asyncio.sleep(sleep_sec)
-        else:
-            end_time = start_time + timedelta(seconds=sleep_sec)
-            sleep_interval = min(sleep_sec / 100, 0.5)
-            macmarrum_log.info(f"sleep for {sleep_sec} seconds, until {end_time.isoformat(sep=' ')}, before starting a player")
-            while datetime.now(timezone.utc) < end_time:
-                await asyncio.sleep(sleep_interval)
 
 
 def mk_filename(start: datetime, end: datetime, duration: timedelta, file_num: int, count: int, suffix: str):
@@ -237,7 +175,7 @@ class Macmarrum357():
     def __init__(self, web_app: web.Application = None):
         self.init_datetime = datetime.now(timezone.utc).astimezone()
         self.web_app = web_app
-        macmarrum_log.debug(f"START Macmarrum357")
+        macmarrum_log.info(f"START Macmarrum357")
         self.conf = {}
         self.load_config()
         self.is_cookies_changed = False
@@ -313,9 +251,9 @@ class Macmarrum357():
         fo = None
         end_dt = None
         i = 0
-        url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
         headers = self.UA_HEADERS | self.AE_HEADERS
         while True:
+            url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
             try:
                 if fo and not fo.closed:
                     await fo.close()
@@ -369,7 +307,6 @@ class Macmarrum357():
                     macmarrum_log.debug('end of switch_file_times - exiting')
                     break
                 else:
-                    macmarrum_log.error(f"{type(e).__name__} {e} {traceback.format_exc()}")
                     i += 1
                     if i > 60:
                         sec = 3600
@@ -389,8 +326,11 @@ class Macmarrum357():
                         sec = 1
                     else:
                         sec = 0
+                    macmarrum_log.error(f"{type(e).__name__} {e}")
+                    if i == 1 or sec >= 600:
+                        macmarrum_log.error(traceback.format_exc())
                     if sec:
-                        macmarrum_log.debug(f"sleeping {sec} before retrying")
+                        macmarrum_log.debug(f"sleeping {sec} sec before retrying")
                         await asyncio.sleep(sec)
         # end while
         if resp and not resp.closed:
@@ -404,7 +344,7 @@ class Macmarrum357():
         if self.web_app:
             await self.web_app.shutdown()
             await self.web_app.cleanup()
-        macmarrum_log.debug(f"STOP Macmarrum357")
+        macmarrum_log.info(f"STOP Macmarrum357")
 
     @classmethod
     async def start_output_file(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int, suffix: str):
@@ -570,7 +510,7 @@ class Macmarrum357():
 
     async def handle_request_live(self, request: web.Request):
         queue, q = self.register_stream_consumer_to_get_queue()
-        web_log.debug(f"handle_request_live queue #{q} - {request.remote} {request.method} {request.path} {request.version} {request.headers.get(c.USER_AGENT)}")
+        web_log_request(f"handle_request_live queue #{q}", request)
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.HANDLER_CONTENT_TYPE_WAIT_MAX_ITER:
@@ -604,7 +544,7 @@ class Macmarrum357():
         return server_resp
 
     async def handle_request_file_then_live(self, request: web.Request):
-        web_log.debug(f"handle_request_file_then_live - {request.remote} {request.method} {request.path} {request.version} {request.headers.get(c.USER_AGENT)}")
+        web_log_request('handle_request_file_then_live', request)
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.HANDLER_CONTENT_TYPE_WAIT_MAX_ITER:
@@ -650,6 +590,11 @@ class Macmarrum357():
                 web_log.debug(f"{type(e).__name__}: {e}")
                 self.unregister_stream_consumer(queue, q)
                 return server_resp
+
+
+def web_log_request(prefix: str, request: web.Request):
+    v = request.version
+    web_log.debug(f"{prefix} - {request.remote} {request.method} {request.path} HTTP/{v.major}.{v.minor} {request.headers.get(c.USER_AGENT)}")
 
 
 def mk_simple_cookie(name: str, value: str, expires: str):
@@ -823,6 +768,15 @@ class SwitchFileDateTime:
             yield file_num, start, end, duration
 
 
+def sleep_if_requested():
+    for arg in sys.argv:
+        if arg.startswith('--sleep='):
+            sec = float(arg.removeprefix('--sleep='))
+            macmarrum_log.info(f"sleep {sec:.1f} second(s)")
+            sleep(sec)
+            return
+
+
 class MyPolicy(asyncio.DefaultEventLoopPolicy):
     def new_event_loop(self):
         selector = selectors.SelectSelector()
@@ -840,7 +794,7 @@ def get_record_kwargs():
     return {}
 
 
-async def spawn_player_with_delay_if_requested(macmarrum357, host, port):
+async def spawn_player_if_requested(macmarrum357, host, port):
     for arg in sys.argv:
         if arg.startswith('--play-with='):
             player = arg.removeprefix('--play-with=')
@@ -853,7 +807,6 @@ async def spawn_player_with_delay_if_requested(macmarrum357, host, port):
     else:  # no break
         player_args = None
     if player_args:
-        await sleep_if_requested()
         player_args.append(f"http://{host}:{port}/live")
         macmarrum_log.info(f"spawn_player {' '.join(quote(a) for a in player_args)}")
         subprocess.Popen(player_args)
@@ -868,7 +821,7 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     live_stream_client_task = asyncio.create_task(macmarrum357.run_client(**kwargs))
     host = app['macmarrum357.host']
     port = app['macmarrum357.port']
-    player_task = asyncio.create_task(spawn_player_with_delay_if_requested(macmarrum357, host, port))
+    player_task = asyncio.create_task(spawn_player_if_requested(macmarrum357, host, port))
     yield
     player_task.cancel()
     live_stream_client_task.cancel()
@@ -884,6 +837,7 @@ def main():
     """Run Macmarrum357 (live-stream client) and a live-stream server app"""
     # https://docs.aiohttp.org/en/stable/web_advanced.html#background-tasks
     configure_logging()
+    sleep_if_requested()
     record_kwargs = get_record_kwargs()
     live_stream_server_app = web.Application()
     macmarrum357 = Macmarrum357(live_stream_server_app)
@@ -901,7 +855,7 @@ def main():
     live_stream_server_app['macmarrum357.port'] = port
     if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
         asyncio.set_event_loop_policy(MyPolicy())
-    web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log.debug)
+    web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log.info)
 
 
 if __name__ == '__main__':
