@@ -248,8 +248,9 @@ class Macmarrum357:
             with self.config_json_path.open('r') as fi:
                 conf = json.load(fi)
                 macmarrum_log.debug(f"load_config {self.config_json_path.name} {conf}")
-        assert conf.get(c.EMAIL) and conf.get(
-            c.PASSWORD), f"{self.config_json_path} is missing email and/or password values"
+        if not conf.get(c.EMAIL) or not conf.get(c.PASSWORD):
+            macmarrum_log.critical(f"{self.config_json_path} is missing email and/or password values")
+            sys.exit(f"brak email i/lub password w {self.config_json_path}")
         self.conf = conf
 
     def load_cookies(self):
@@ -447,7 +448,7 @@ class Macmarrum357:
         try:
             subprocess.Popen(args)
         except FileNotFoundError:
-            print(f"** '{c.MPV_COMMAND}' might be missing or incorrect in {self.config_json_path}")
+            macmarrum_log.error(f"'{c.MPV_COMMAND}' might be missing or incorrect in {self.config_json_path}")
             raise
 
 
