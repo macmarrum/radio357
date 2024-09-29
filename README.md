@@ -61,6 +61,9 @@ Nagrywanie ze zmianą pliku o pełnej godzinie od momentu uruchomienia do półn
 
 *Wskazówka: wartości dla opcji `--play-with=` oraz `--record=` są w formacie JSON*
 
+Jeżeli w wierszu poleceń podanej jest `--sleep=`, np. `--sleep=30`,
+**aiomacmarrum357.py** czeka określoną ilość sekund przed uruchomieniem.
+
 **Poniższe polecenia mają sens gdy **aiomacmarrum357.py** jest już uruchomiony.**
 
 Odtwarzanie stumienia na żywo z lokalnego serwera http na hoście `localhost` przy użyciu **mpv**\
@@ -68,9 +71,6 @@ Odtwarzanie stumienia na żywo z lokalnego serwera http na hoście `localhost` p
 
 Odtwarzanie z lokalnego serwera http na hoście `localhost`, od początku nagrywanego pliku, a potem na żywo, przy użyciu **mpv**\
 `mpv http://localhost:8357/file-then-live`
-
-Jeżeli w wierszu poleceń podanej jest `--sleep=`, np. `--sleep=30`,
-**aiomacmarrum357.py** czeka określoną ilość sekund przed uruchomieniem.
 
 ### Konfiguracja
 
