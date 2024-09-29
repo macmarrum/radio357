@@ -130,26 +130,20 @@ def configure_logging():
 
 
 def sleep_if_requested(start_time: datetime | None = None):
-    sleep_sec = 0
-    if '--sleep' in sys.argv:
-        k = None
-        for i, a in enumerate(sys.argv):
-            if a == '--sleep':
-                k = i
-                break
-        sleep_sec = float(sys.argv[k + 1])
-        # remove --sleep SECONDS
-        del sys.argv[k + 1]
-        del sys.argv[k]
-    if sleep_sec:
-        if start_time is None:
-            sleep(sleep_sec)
-        else:
-            end_time = start_time + timedelta(seconds=sleep_sec)
-            sleep_interval = min(sleep_sec / 100, 0.5)
-            macmarrum_log.info(f"sleeping for {sleep_sec} seconds, until {end_time.isoformat(sep=' ')}")
-            while datetime.now(timezone.utc) < end_time:
-                sleep(sleep_interval)
+    for arg in sys.argv:
+        if arg.startswith('--sleep='):
+            seconds = int(arg.removeprefix('--sleep='))
+            if start_time is None:
+                macmarrum_log.info(f"sleep {seconds} seconds")
+                sleep(seconds)
+            else:
+                end_time = start_time + timedelta(seconds=seconds)
+                interval = min(seconds / 100, 0.5)
+                macmarrum_log.info(f"sleep {seconds} seconds, until {end_time.isoformat(sep=' ')}")
+                while datetime.now(timezone.utc) < end_time:
+                    sleep(interval)
+            sys.argv.remove(arg)
+            break
 
 
 def iter_mozilla_cookies_as_csv(cookiejar: RequestsCookieJar | CookieJar, sep: str = ' '):
@@ -207,7 +201,7 @@ class Macmarrum357:
     "mpv_options": ["--force-window=immediate"]
     When mpv_command is missing, macmarrum357 looks for mpv in PATH.
 
-    Sleeps for SECONDS before starting mpv, if `--sleep SECONDS` arguments are found in the command line.
+    Sleeps for SECONDS before starting mpv, if `--sleep=SECONDS` arguments are found in the command line.
 
     Passes all other command-line arguments to mpv, so that macmarrum357 can be used as a drop-in replacement for mpv,
     e.g. adding `--end=60:00 --mute=yes --stream-record=output.aac`
@@ -288,7 +282,7 @@ class Macmarrum357:
                     self.persist_cookies_if_changed()
                 else:
                     resp.raise_for_status()
-            sleep_if_requested()
+            sleep_if_requested(self.init_datetime)
             self.spawn_mpv()
             self.run_periodic_token_refresh_thread()
         except KeyboardInterrupt:
