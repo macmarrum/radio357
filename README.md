@@ -35,7 +35,7 @@ Gdy brak `mpv_command`, **macmarrum357** szuka **mpv** w `PATH`.
 
 ---
 
-## aiomacmarrum357 – alternatywny odtwarzacz/nagrywarka patrona Radia 357, działający z wiersza poleceń
+## aiomacmarrum357 – alternatywne odtwarzacz i/lub nagrywarka patrona Radia 357, działające z wiersza poleceń
 
 Odtwarza i/lub nagrywa Radio 357 na żywo, jako zalogowany użytkownik, z pominięciem komunikatu startowego.
 
