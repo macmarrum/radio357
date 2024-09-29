@@ -155,17 +155,18 @@ class Macmarrum357():
     AE_HEADERS = {c.ACCEPT: f"{c.AUDIO_AAC},{c.AUDIO_MPEG}", c.ACCEPT_ENCODING: c.IDENTITY}
     ACCEPT_JSON_HEADERS = {c.ACCEPT: c.APPLICATION_JSON}
     TOKEN_VALIDITY_DELTA = timedelta(minutes=60)
-    ITER_CHUNK_SIZE = 4 * 1024
-    HANDLER_START_BUFFER_SEC = 1.0
+    ITER_CHUNKED_UP_TO_SIZE = 4 * 1024
+    HANDLER_START_BUFFER_SEC = 0
     HANDLER_CONTENT_TYPE_WAIT_MAX_ITER = 5_000
     HANDLER_CONTENT_TYPE_WAIT_SEC = 0.1
-    QUEUE_MAX_LEN = 9
-    QUEUE_COUNT_LIMIT = 99
-    QUEUE_FULL_MAX_PUT_ATTEMPTS = 5
+    QUEUE_MAX_LEN = 44
+    QUEUE_COUNT_LIMIT = sys.maxsize
+    QUEUE_FULL_MAX_PUT_ATTEMPTS = 111
     QUEUE_FULL_SLEEP_SEC = 0.05
-    ITER_REC_CHUNK_SIZE = 8 * 1024
-    ITER_REC_WAIT_SECS_FOR_DATA = 1
+    ITER_FILE_CHUNK_SIZE = 8 * 1024
+    ITER_FILE_WAIT_SECS_FOR_DATA = 1
     config_toml_path = macmarrum357_path / 'config.toml'
+    aiohttp_cookiejar_pickle_path = macmarrum357_path / 'aiohttp_cookiejar.pickle'
     OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
     CONTENT_TYPE_TO_SUFFIX = {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3', c.APPLICATION_OCTET_STREAM: '.bin'}
@@ -222,21 +223,9 @@ class Macmarrum357():
         self.is_playing_or_recoding = True
         should_record = switch_file_times is not None
 
-        # https://github.com/netblue30/fdns/issues/47
-        if nameservers := self.conf.get(c.NAMESERVERS):
-            macmarrum_log.debug(f"use nameservers {nameservers}")
-            try:
-                connector = aiohttp.TCPConnector(resolver=AsyncResolver(nameservers=nameservers))
-            except Exception as e:
-                macmarrum_log.error(f"{type(e).__name__} {e}")
-                raise
-        else:
-            connector = None
-        # https://github.com/aio-libs/aiohttp/issues/3203
-        # https://stackoverflow.com/questions/61199544/dealing-with-aiohttp-session-get-timeout-issues-for-large-amout-of-requests
-        timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
-        self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
-        await self.refresh_or_login(macmarrum_log)
+        self.session = aiohttp.ClientSession(connector=self.mk_connector(), timeout=self.mk_timeout(), cookie_jar=self.mk_cookie_jar())
+        # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
+        await self.refresh_or_login_and_dump_cookies(macmarrum_log)
         run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
 
         if should_record:
@@ -244,7 +233,6 @@ class Macmarrum357():
                 output_dir = Path().absolute()
             if filename is None:
                 filename = mk_filename
-
             switch_file_datetime = SwitchFileDateTime(switch_file_times)
             count = switch_file_datetime.count
             switch_file_datetime_iter = switch_file_datetime.mk_iter()
@@ -260,7 +248,7 @@ class Macmarrum357():
             try:
                 if fo and not fo.closed:
                     await fo.close()
-                macmarrum_log.debug(f"get {url} {headers} {[ck for ck in self.session.cookie_jar]}")
+                macmarrum_log.debug(f"get {url} {headers}")
                 while True:  # handle redirects
                     if resp and not resp.closed:
                         resp.close()
@@ -279,7 +267,12 @@ class Macmarrum357():
                     suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
                     self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
                     self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
-                async for chunk in resp.content.iter_chunked(self.ITER_CHUNK_SIZE):
+                macmarrum_log.debug(f"{resp.status} - headers {dict(resp.headers)}")
+                chunk_num = 0
+                async for chunk in resp.content.iter_chunked(self.ITER_CHUNKED_UP_TO_SIZE):
+                    # see aiohttp.streams.StreamReader._read_nowait -> """Read not more than n bytes, or whole buffer if n == -1"""
+                    # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
+                    # chunk_num += 1
                     if self.has_consumers:
                         for queue, q in self._consumer_queues:
                             k = 0
@@ -288,9 +281,8 @@ class Macmarrum357():
                                     queue.put_nowait(chunk)
                                     break
                                 except asyncio.queues.QueueFull as e:
-                                    k += 1
-                                    if k <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
-                                        macmarrum_log.debug(f"queue #{q} - {type(e).__name__} - put attempt {k} - sleeping {self.QUEUE_FULL_SLEEP_SEC} sec")
+                                    if (k := k + 1) <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
+                                        macmarrum_log.debug(f"queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k} - sleeping {self.QUEUE_FULL_SLEEP_SEC} sec")
                                         await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
                                     else:
                                         macmarrum_log.debug(f"queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - exiting")
@@ -349,6 +341,33 @@ class Macmarrum357():
             await self.web_app.cleanup()
         macmarrum_log.info(f"STOP Macmarrum357")
 
+    def mk_connector(self):
+        # https://github.com/netblue30/fdns/issues/47
+        if nameservers := self.conf.get(c.NAMESERVERS):
+            try:
+                connector = aiohttp.TCPConnector(resolver=AsyncResolver(nameservers=nameservers))
+            except Exception as e:
+                macmarrum_log.error(f"{type(e).__name__} {e}")
+                raise
+        else:
+            connector = None
+        macmarrum_log.debug(f"mk_connector - use nameservers {nameservers}")
+        return connector
+
+    def mk_timeout(self):
+        macmarrum_log.debug('mk_timeout')
+        # https://github.com/aio-libs/aiohttp/issues/3203
+        # https://stackoverflow.com/questions/61199544/dealing-with-aiohttp-session-get-timeout-issues-for-large-amout-of-requests
+        return aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
+
+    def mk_cookie_jar(self):
+        cookie_jar = CookieJar()
+        exists = self.aiohttp_cookiejar_pickle_path.exists()
+        macmarrum_log.debug(f"mk_cookie_jar from {self.aiohttp_cookiejar_pickle_path.name} - {exists}")
+        if exists:
+            cookie_jar.load(self.aiohttp_cookiejar_pickle_path)
+        return cookie_jar
+
     @classmethod
     async def start_output_file(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int, suffix: str):
         file_num, start, end, duration = next(switch_file_datetime_iterator)
@@ -405,11 +424,11 @@ class Macmarrum357():
         # initial session has no cookies, so ignore
         if isinstance(self.session.cookie_jar, CookieJar):
             # macmarrum_log.debug(f"{self.session.cookie_jar._cookies=}")
-            for cookie in self.session.cookie_jar:
-                if domain and cookie[c.DOMAIN] != domain:
+            for morsel in self.session.cookie_jar:
+                if domain and morsel[c.DOMAIN] != domain:
                     continue
-                if cookie.key == name:
-                    return MacmarrumCookie(name, cookie.value, parse_date(cookie[c.EXPIRES]))
+                if morsel.key == name:
+                    return MacmarrumCookie(name, morsel.value, parse_date(morsel[c.EXPIRES]))
         return MacmarrumCookie(name, '', 0)
 
     async def init_r357(self, logger=macmarrum_log):
@@ -443,7 +462,7 @@ class Macmarrum357():
                 token_log.debug(f"refresh_token_in_a_loop attempt {attempt}")
                 if self.session.closed:
                     break
-                await self.refresh_or_login(token_log)
+                await self.refresh_or_login_and_dump_cookies(token_log)
                 # query account to see if the new token works
                 url = 'https://auth.r357.eu/api/account'
                 token = self.get_cookie(c.TOKEN).value
@@ -462,7 +481,8 @@ class Macmarrum357():
 
         await refresh_token_in_a_loop()
 
-    async def refresh_or_login(self, logger=macmarrum_log):
+    async def refresh_or_login_and_dump_cookies(self, logger=macmarrum_log):
+        macmarrum_log.debug('refresh_of_login_and_dump_cookies')
         # try to refresh the token before falling back to login
         is_to_login = False
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
@@ -492,6 +512,7 @@ class Macmarrum357():
                     await self.update_and_persist_tokens_from_resp(resp, logger)
                 else:
                     logger.error(f"login {resp.status}")
+        self.dump_cookies_if_changed()
 
     async def update_and_persist_tokens_from_resp(self, resp, logger=macmarrum_log):
         d = await resp.json()
@@ -510,6 +531,17 @@ class Macmarrum357():
         self.session.cookie_jar.update_cookies(name_to_cookie[c.REFRESH_TOKEN], response_url=url)
         self.session.cookie_jar.update_cookies(name_to_cookie[c.REFRESH_TOKEN_EXPIRES], response_url=url)
         self.is_cookies_changed = True
+
+    def dump_cookies_if_changed(self):
+        macmarrum_log.debug(f"dump_cookies_if_changed - {self.is_cookies_changed}")
+        if not self.is_cookies_changed:
+            return
+        cookie_jar = self.session.cookie_jar
+        if isinstance(cookie_jar, CookieJar):
+            cookie_jar.save(self.aiohttp_cookiejar_pickle_path)
+            self.is_cookies_changed = False
+            for morsel in cookie_jar:
+                macmarrum_log.debug(f"dump_cookies_if_changed {morsel.OutputString()}")
 
     async def handle_request_live(self, request: web.Request):
         queue, q = self.register_stream_consumer_to_get_queue()
@@ -561,7 +593,7 @@ class Macmarrum357():
         if is_file_path:
             web_log.debug(f"handle_request_file_then_live from {self.file_path.name}")
             async with aiofiles.open(self.file_path, 'rb') as fi:
-                while chunk := await fi.read(self.ITER_REC_CHUNK_SIZE):
+                while chunk := await fi.read(self.ITER_FILE_CHUNK_SIZE):
                     try:
                         await server_resp.write(chunk)
                     except (ConnectionResetError, Exception) as e:
