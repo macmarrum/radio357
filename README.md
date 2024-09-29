@@ -1,15 +1,15 @@
 # radio357
 
-## macmarrum357 – alternatywny odtwarzacz patrona Radia357, działający z wiersza poleceń
+## macmarrum357 – alternatywny odtwarzacz patrona Radia 357, działający z wiersza poleceń
 
 Odtwarza Radio 357 na żywo, jako zalogowany użytkownik, z pominięciem komunikatu startowego.
 
 Loguje użytkownika, pobiera ciasteczka i używa ich do odtwarzania strumienia przy pomocy **mpv**.
 
 Opcjonalnie czeka określoną ilość sekund przed włączeniem **mpv**,
-jeżeli `--sleep SECONDS` jest podane w wierszu poleceń.
+jeżeli `--sleep SECONDS` jest podane w wierszu poleceń, np. `--sleep 30`.
 
-Przekazuje wszystkie argumenty wiersza polecenia do **mpv**, 
+Przekazuje wszystkie pozostałe argumenty wiersza polecenia do **mpv**,
 żeby **macmarrum357** mógł być używany zamiennie z **mpv**.\
 Np. dodanie po `python macmarrum357.py`\
 ` --end=60:00 --mute=yes --stream-record=output.aac`\
