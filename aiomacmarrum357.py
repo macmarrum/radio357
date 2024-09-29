@@ -170,6 +170,8 @@ class Macmarrum357():
     OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
     CONTENT_TYPE_TO_SUFFIX = {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3', c.APPLICATION_OCTET_STREAM: '.bin'}
+    _24H_AS_SECONDS = 24 * 60 * 60
+    _5M_AS_SECONDS = 5 * 60
 
     def __init__(self, web_app: web.Application = None):
         self.init_datetime = datetime.now(timezone.utc).astimezone()
@@ -440,15 +442,13 @@ class Macmarrum357():
 
     async def run_periodic_token_refresh(self):
         token_log.info(f"run_periodic_token_refresh")
-        _24h_as_seconds = 24 * 60 * 60
-        _5m_as_seconds = 5 * 60
 
         async def refresh_token_in_a_loop():
             token_log.debug('refresh_token_in_a_loop (sleep until it\'s time)')
-            if time() > self.get_cookie(c.R357_PID).expires - _24h_as_seconds:
+            if time() > self.get_cookie(c.R357_PID).expires - self._24H_AS_SECONDS:
                 await self.init_r357_and_set_cookies_changed_if_needed(token_log)
             expires = self.get_cookie(c.TOKEN).expires
-            expires_with_margin = expires - _5m_as_seconds
+            expires_with_margin = expires - self._5M_AS_SECONDS
             while time() < expires_with_margin:
                 if not self.is_playing_or_recoding:
                     return
@@ -488,7 +488,7 @@ class Macmarrum357():
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
         if not refresh_token_cookie.value:
             is_to_login = True
-        elif time() > refresh_token_cookie.expires - 55 * 60:  # it's been more than 5 min since last refresh
+        elif time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
             url = 'https://auth.r357.eu/api/auth/refresh'
             refresh_token = self.get_cookie(c.REFRESH_TOKEN).value
             headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
