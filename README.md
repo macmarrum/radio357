@@ -11,8 +11,7 @@ Jeżeli w wierszu poleceń podane jest `--sleep=`, np. `--sleep=30`,
 
 Przekazuje wszystkie pozostałe argumenty wiersza polecenia do **mpv**,
 żeby **macmarrum357** mógł być używany zamiennie z **mpv**.\
-Np. dodanie po `python macmarrum357.py`\
-` --end=60:00 --mute=yes --stream-record=output.aac`\
+Np. polecenie `python macmarrum357.py --end=60:00 --mute=yes --stream-record=output.aac`\
 zapisze bezgłośnie 60 minut strumienia do `output.aac`.
 
 ### Konfiguracja
@@ -87,7 +86,7 @@ Email oraz hasło do logowania na https://konto.radio357.pl muszą być podane w
 lub\
 `~/.config/macmarrum357/config.toml` – na Unix.
 
-W tym samym pliku można podać ścieżkę do odtwarzacza używanego dla `--play`, np. **mpv**, oraz opcje programu:\
+W tym samym pliku można podać ścieżkę do odtwarzacza używanego przy `--play`, np. **mpv**, oraz opcje programu:\
 `player_args = ['C:\Program Files\mpv\mpv.exe', '--force-window=immediate', '--fs=no']`\
 jak również IP interfejsu sieciowego i port na którym strumień będzie udostępniany lokalnie\
 `host = '0.0.0.0`\
