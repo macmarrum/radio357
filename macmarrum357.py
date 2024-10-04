@@ -187,7 +187,7 @@ class c:
 
 
 class Macmarrum357:
-    """
+    r"""
     Plays the live stream of Radio 357, as a logged-in user, which skips the start-up announcement.
 
     Logs in, gets cookies and uses them to play the stream with mpv.
