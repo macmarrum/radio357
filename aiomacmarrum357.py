@@ -147,6 +147,45 @@ class c:
 
 
 class Macmarrum357():
+    r"""
+    Plays the live stream of Radio 357, as a logged-in user, which skips start-up announcements.
+
+    Logs in, gets cookies and uses them to receive the live stream.
+    Makes the stream available locally via http so that it can be played,
+    e.g. with **mpv** or Windows Media Player.
+    Optionally records the stream to one or several files, changing them at specified times.
+
+    Play
+    `python aiomacmarrum357.py --play`
+    or
+    `python aiomacmarrum357.py --play-with='["C:\\Program Files\\mpv\\mpv.exe", "--force-window=immediate", "--fs=no"]'`
+
+    Record
+    `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["9:00", "12:00"]}'`
+
+    The above command will record the live stream to files, changing them at the specified times, e.g. when started at 6:00, it will save two files:
+    * 2024-09-23,Mon_06.aac - covering 6:00 to 9:00
+    * 2024-09-23,Mon_09.aac - covering 9:00 to 12:00
+
+    Record to files changed on the hour since the start until midnight,
+    and spawn `aac-to-m4a` after each change
+    `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
+
+    Note: the values for options `--play=` and `--record=` are in JSON format
+
+    Configuration
+
+    Email and password for https://konto.radio357.pl must be specified in
+    - %APPDATA%\macmarrum357\config.toml – on Windows
+    or
+    - ~/.config/macmarrum357/config.toml – on Unix
+
+    The path to a player used with `--play` can be set in the same file, and player options:
+    `player_args = ['C:\Program Files\mpv\mpv.exe', '--force-window=immediate', '--fs=no']`\
+    as well as IP of the network interface and port where the stream will be served locally
+    `host = '0.0.0.0`
+    `port = 8357`
+    """
     STREAM = 'https://stream.radio357.pl/?s=www'
     REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
     LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
