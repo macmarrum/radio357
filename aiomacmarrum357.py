@@ -482,25 +482,22 @@ class Macmarrum357():
         await refresh_token_in_a_loop()
 
     async def refresh_or_login_and_dump_cookies(self, logger=macmarrum_log):
-        macmarrum_log.debug('refresh_of_login_and_dump_cookies')
+        macmarrum_log.debug('refresh_or_login_and_dump_cookies')
         # try to refresh the token before falling back to login
-        is_to_login = False
+        is_to_login = True
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
-        if not refresh_token_cookie.value:
-            is_to_login = True
-        elif time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
+        if refresh_token_cookie.value and time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
             url = 'https://auth.r357.eu/api/auth/refresh'
-            refresh_token = self.get_cookie(c.REFRESH_TOKEN).value
             headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
-            _json = {c.REFRESHTOKEN: refresh_token}
+            _json = {c.REFRESHTOKEN: self.get_cookie(c.REFRESH_TOKEN).value}
             logger.debug(f"refresh_token {url} {headers} {_json}")
             async with self.session.post(url, headers=headers, json=_json) as resp:
                 if resp.status == 200:
                     logger.debug(f"refresh_token {resp.status}")
+                    is_to_login = False
                     await self.update_and_persist_tokens_from_resp(resp, logger)
                 else:
                     logger.debug(f"refresh_token {resp.status}")
-                    is_to_login = True
         if is_to_login:
             url = 'https://auth.r357.eu/api/auth/login'
             credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
