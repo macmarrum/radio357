@@ -248,8 +248,6 @@ class Macmarrum357():
         while True:
             url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
             try:
-                if fo and not fo.closed:
-                    await fo.close()
                 macmarrum_log.debug(f"get {url} {headers}")
                 while True:  # handle redirects
                     if resp and not resp.closed:
@@ -267,7 +265,8 @@ class Macmarrum357():
                         break
                 if should_record:
                     suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
-                    self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
+                    if not fo or fo.closed:
+                        self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
                     self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
                 macmarrum_log.debug(f"{resp.status} - headers {dict(resp.headers)}")
                 chunk_num = 0
@@ -487,29 +486,38 @@ class Macmarrum357():
         is_to_login = True
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
         if refresh_token_cookie.value and time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
-            url = 'https://auth.r357.eu/api/auth/refresh'
-            headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
-            _json = {c.REFRESHTOKEN: self.get_cookie(c.REFRESH_TOKEN).value}
-            logger.debug(f"refresh_token {url} {headers} {_json}")
-            async with self.session.post(url, headers=headers, json=_json) as resp:
-                if resp.status == 200:
-                    logger.debug(f"refresh_token {resp.status}")
-                    is_to_login = False
-                    await self.update_and_persist_tokens_from_resp(resp, logger)
-                else:
-                    logger.debug(f"refresh_token {resp.status}")
+            is_to_login = not await self.refresh_token(logger)
         if is_to_login:
-            url = 'https://auth.r357.eu/api/auth/login'
-            credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
-            headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
-            logger.debug(f"login {url} {headers} {credentials}")
-            async with self.session.post(url, headers=headers, json=credentials) as resp:
-                if resp.status == 200:
-                    logger.debug(f"login {resp.status}")
-                    await self.update_and_persist_tokens_from_resp(resp, logger)
-                else:
-                    logger.error(f"login {resp.status}")
+            await self.login(logger)
         self.dump_cookies_if_changed()
+
+    async def refresh_token(self, logger):
+        url = 'https://auth.r357.eu/api/auth/refresh'
+        headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
+        _json = {c.REFRESHTOKEN: self.get_cookie(c.REFRESH_TOKEN).value}
+        logger.debug(f"refresh_token {url} {headers} {_json}")
+        async with self.session.post(url, headers=headers, json=_json) as resp:
+            if resp.status == 200:
+                logger.debug(f"refresh_token {resp.status}")
+                await self.update_and_persist_tokens_from_resp(resp, logger)
+                return True
+            else:
+                logger.debug(f"refresh_token {resp.status}")
+                return False
+
+    async def login(self, logger):
+        url = 'https://auth.r357.eu/api/auth/login'
+        credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
+        headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
+        logger.debug(f"login {url} {headers} {credentials}")
+        async with self.session.post(url, headers=headers, json=credentials) as resp:
+            if resp.status == 200:
+                logger.debug(f"login {resp.status}")
+                await self.update_and_persist_tokens_from_resp(resp, logger)
+                return True
+            else:
+                logger.error(f"login {resp.status}")
+                return False
 
     async def update_and_persist_tokens_from_resp(self, resp, logger=macmarrum_log):
         d = await resp.json()
