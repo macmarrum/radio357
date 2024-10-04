@@ -50,7 +50,7 @@ lub\
 Nagrywanie\
 `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["9:00", "12:00"]}'`
 
-Powyższa komenda zapisze program na żywo do plików, zmieniając je o określonych porach,
+Powyższe polecenie zapisze program na żywo do plików, zmieniając je o określonych porach,
 np. w przypadku uruchomienia o 6:00 zapisze dwa pliki:
 * 2024-09-23,Mon_06.aac - obejmujący audycję od 6:00 do 9:00
 * 2024-09-23,Mon_09.aac - obejmujący audycję od 9:00 do 12:00
