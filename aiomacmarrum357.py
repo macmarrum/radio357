@@ -340,7 +340,6 @@ class Macmarrum357():
         if self.web_app:
             await self.web_app.shutdown()
             await self.web_app.cleanup()
-        macmarrum_log.info(f"STOP Macmarrum357")
 
     def mk_connector(self):
         # https://github.com/netblue30/fdns/issues/47
@@ -867,6 +866,7 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     live_stream_client_task.cancel()
     await player_task
     await live_stream_client_task
+    macmarrum_log.info(f"STOP Macmarrum357")
 
 
 def on_web_app_shutdown(app):
