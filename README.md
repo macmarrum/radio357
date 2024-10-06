@@ -21,11 +21,11 @@ w przypadku uruchomienia o 6:00 zapisze dwa pliki:
 * 2024-09-23,Mon_06.aac - obejmujący audycję od 6:00 do 9:00
 * 2024-09-23,Mon_09.aac - obejmujący audycję od 9:00 do 12:00
 
+***Wskazówka**: wartości dla opcji `--play-with=` oraz `--record=` są w formacie JSON*
+
 Nagrywanie ze zmianą pliku o pełnej godzinie od momentu uruchomienia do północy,
 a po każdej zmianie uruchomienie w tle polecenia `aac-to-m4a`\
 `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
-
-*Wskazówka: wartości dla opcji `--play-with=` oraz `--record=` są w formacie JSON*
 
 Przykładowy skrypt `aac-to-m4a` – ścieżka do nagranego pliku jest przekazywana jako pierwszy argument
 
@@ -58,6 +58,8 @@ W tym samym pliku można podać ścieżkę do odtwarzacza używanego przy `--pla
 jak również IP interfejsu sieciowego i port na którym strumień będzie udostępniany lokalnie\
 `host = '0.0.0.0'`\
 `port = 8357`
+
+***Wskazówka**: `0.0.0.0` oznacza wszystkie interfejsy sieciowe, bez ograniczeń*
 
 ### Wymagania systemowe
 
