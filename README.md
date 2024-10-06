@@ -56,7 +56,7 @@ lub\
 W tym samym pliku można podać ścieżkę do odtwarzacza używanego przy `--play`, np. **mpv**, oraz opcje programu:\
 `player_args = ['C:\Program Files\mpv\mpv.exe', '--force-window=immediate', '--fs=no']`\
 jak również IP interfejsu sieciowego i port na którym strumień będzie udostępniany lokalnie\
-`host = '0.0.0.0`\
+`host = '0.0.0.0'`\
 `port = 8357`
 
 ### Wymagania systemowe
