@@ -109,6 +109,10 @@ def quote(x):
     return shlex.quote(x)
 
 
+class NoOutputError(RuntimeError):
+    pass
+
+
 class c:
     LIVE_STREAM_URL = 'live_stream_url'
     LIVE_STREAM_LOCATION_REPLACEMENTS = 'live_stream_location_replacements'
@@ -334,7 +338,12 @@ class Macmarrum357():
                             self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
                             self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
                             self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+                    elif not self.has_consumers:
+                        macmarrum_log.info('not recording and no consumers - exiting')
+                        raise NoOutputError()
             except asyncio.queues.QueueFull:
+                break
+            except NoOutputError:
                 break
             except Exception as e:
                 # https://docs.python.org/3/library/exceptions.html#StopIteration
