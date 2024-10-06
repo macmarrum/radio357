@@ -533,8 +533,10 @@ class Macmarrum357():
         # try to refresh the token before falling back to login
         is_to_login = True
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
-        if refresh_token_cookie.value and time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
-            is_to_login = not await self.refresh_token(logger)
+        if refresh_token_cookie.value:
+            is_to_login = False
+            if time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
+                is_to_login = not await self.refresh_token(logger)
         if is_to_login:
             await self.login(logger)
         self.dump_cookies_if_changed()
