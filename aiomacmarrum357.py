@@ -326,10 +326,10 @@ class Macmarrum357():
                                     break
                                 except asyncio.queues.QueueFull as e:
                                     if (k := k + 1) <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
-                                        macmarrum_log.debug(f"queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k} - sleeping {self.QUEUE_FULL_SLEEP_SEC} sec")
+                                        macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
                                         await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
                                     else:
-                                        macmarrum_log.debug(f"queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - exiting")
+                                        macmarrum_log.debug(f"exit - queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded")
                                         raise
                     if should_record:
                         await fo.write(chunk)
@@ -339,7 +339,7 @@ class Macmarrum357():
                             self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
                             self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
                     elif not self.has_consumers:
-                        macmarrum_log.info('not recording and no consumers - exiting')
+                        macmarrum_log.info('exit - no consumers and not recording')
                         raise NoOutputError()
             except asyncio.queues.QueueFull:
                 break
@@ -348,7 +348,7 @@ class Macmarrum357():
             except Exception as e:
                 # https://docs.python.org/3/library/exceptions.html#StopIteration
                 if isinstance(e, RuntimeError) and isinstance(e.__cause__, StopIteration):
-                    macmarrum_log.debug('end of switch_file_times - exiting')
+                    macmarrum_log.debug('exit - end of switch_file_times')
                     break
                 else:
                     i += 1
@@ -374,7 +374,7 @@ class Macmarrum357():
                     if i == 1 or sec >= 600:
                         macmarrum_log.error(traceback.format_exc())
                     if sec:
-                        macmarrum_log.debug(f"sleeping {sec} sec before retrying")
+                        macmarrum_log.debug(f"sleep {sec} sec before retrying")
                         await asyncio.sleep(sec)
         # end while
         if resp and not resp.closed:
@@ -433,10 +433,10 @@ class Macmarrum357():
             else:
                 new_stem = f"{stem}~1"
             output_path = output_path.with_stem(new_stem)
-            macmarrum_log.warning(f"File exists: {old_path}. Changing to {new_stem}{output_path.suffix}")
+            macmarrum_log.warning(f"change filename to {new_stem}{output_path.suffix} - file exists: {old_path}. ")
             is_filename_changed = True
         if not is_filename_changed and 'a' in cls.OUTPUT_FILE_MODE and output_path.exists():
-            macmarrum_log.warning(f"Append to an exiting file {output_path}")
+            macmarrum_log.warning(f"append to an exiting file {output_path}")
         macmarrum_log.info(f"RECORD {file_num}/{count} {duration} to {output_path}")
         fo = await aiofiles.open(output_path, cls.OUTPUT_FILE_MODE)
         return output_path, fo, file_num, end
