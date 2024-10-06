@@ -376,6 +376,7 @@ class Macmarrum357():
             await fo.close()
         self.is_playing_or_recoding = False
         await run_periodic_token_refresh_task
+        macmarrum_log.info(f"STOP Macmarrum357")
         if self.web_app:
             await self.web_app.shutdown()
             await self.web_app.cleanup()
@@ -905,7 +906,6 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     live_stream_client_task.cancel()
     await player_task
     await live_stream_client_task
-    macmarrum_log.info(f"STOP Macmarrum357")
 
 
 def on_web_app_shutdown(app):
