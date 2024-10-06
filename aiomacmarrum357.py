@@ -517,7 +517,7 @@ class Macmarrum357():
                 token_log.debug(f'query_account {headers=}')
                 async with self.session.get(url, headers=headers) as resp:
                     if resp.status != 200:  # and self.is_playing_or_recoding:
-                        msg = f"{resp.status} query_account; waiting {5 * attempt} sec before retrying"
+                        msg = f"{resp.status} query_account; sleep {5 * attempt} sec before retrying"
                         token_log.debug(msg)
                         await asyncio.sleep(5 * attempt)
                     else:

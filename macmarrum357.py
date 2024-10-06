@@ -341,7 +341,7 @@ class Macmarrum357:
                 macmarrum_log.debug(f'query_account {headers=}')
                 with self.session.get(url, headers=headers) as resp:
                     if resp.status_code != 200:
-                        msg = f"{resp.status_code} query_account; waiting {5 * attempt} sec before retrying"
+                        msg = f"{resp.status_code} query_account; sleep {5 * attempt} sec before retrying"
                         macmarrum_log.debug(msg)
                         sleep(5 * attempt)
                     else:
