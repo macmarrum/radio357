@@ -299,7 +299,7 @@ class Macmarrum357():
                     if resp.status in [301, 302, 303, 307, 308] and (location := resp.headers.get(c.LOCATION)):
                         macmarrum_log.debug(f"{resp.status} - location: {location}")
                         if replacement := self.location_replacements.get(location):
-                            macmarrum_log.debug(f"replace location to {replacement}")
+                            macmarrum_log.debug(f"replace location with {replacement}")
                             location = replacement
                         url = location
                     else:
@@ -531,12 +531,12 @@ class Macmarrum357():
     async def refresh_or_log_in_and_dump_cookies(self, logger=macmarrum_log):
         macmarrum_log.debug('refresh_or_log_in_and_dump_cookies')
         # try to refresh the token before falling back to logging in
-        is_to_log_in = True
+        is_to_log_in = False
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
-        if refresh_token_cookie.value:
-            is_to_log_in = False
-            if time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
-                is_to_log_in = not await self.refresh_token(logger)
+        if not refresh_token_cookie.value:
+            is_to_log_in = True
+        elif time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
+            is_to_log_in = not await self.refresh_token(logger)
         if is_to_log_in:
             await self.log_in(logger)
         self.dump_cookies_if_changed()
