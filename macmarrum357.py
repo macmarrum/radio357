@@ -262,7 +262,7 @@ class Macmarrum357:
 
     def run(self):
         try:
-            self.refresh_or_login()
+            self.refresh_or_log_in()
             headers = self.UA_HEADERS | self.AE_HEADERS
             macmarrum_log.debug(f"live-stream {self.url} {headers}")
             while True:
@@ -337,7 +337,7 @@ class Macmarrum357:
             while True:
                 attempt += 1
                 macmarrum_log.debug(f"periodic_token_refresh attempt {attempt}")
-                self.refresh_or_login()
+                self.refresh_or_log_in()
                 with self.mk_query_account_resp() as resp:
                     if resp.status_code == 200:
                         self.persist_cookies_if_changed()
@@ -364,25 +364,25 @@ class Macmarrum357:
             assert resp.status_code == 200, f"{resp.status_code} {resp.text}"
             assert self.session.cookies.get(c.R357_PID), f"{c.R357_PID} is missing. This is unexpected."
 
-    def refresh_or_login(self):
-        # try to refresh the token before falling back to login
-        is_to_login = False
+    def refresh_or_log_in(self):
+        # try to refresh the token before falling back to log in
+        is_to_log_in = False
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
         if not refresh_token_cookie.value:
-            is_to_login = True
+            is_to_log_in = True
         elif time() > refresh_token_cookie.expires - 55 * 60:  # it's been more than 5 min since last refresh
             with self.mk_refresh_token_resp() as resp:
                 if resp.status_code == 200:
                     self.update_and_persist_tokens_from_resp(resp)
                 else:
                     macmarrum_log.debug(f"refresh_token {resp.status_code}")
-                    is_to_login = True
-        if is_to_login:
-            with self.mk_login_resp() as resp:
+                    is_to_log_in = True
+        if is_to_log_in:
+            with self.mk_log_in_resp() as resp:
                 if resp.status_code == 200:
                     self.update_and_persist_tokens_from_resp(resp)
                 else:
-                    macmarrum_log.error(f"login {resp.status_code}")
+                    macmarrum_log.error(f"log_in {resp.status_code}")
 
     def mk_refresh_token_resp(self):
         macmarrum_log.debug('refresh_token')
@@ -405,8 +405,8 @@ class Macmarrum357:
         self.session.cookies.set_cookie(mk_cookie(c.REFRESH_TOKEN_EXPIRES, f"{expires}000", expires))
         self.is_cookies_changed = True
 
-    def mk_login_resp(self):
-        macmarrum_log.debug('login')
+    def mk_log_in_resp(self):
+        macmarrum_log.debug('log_in')
         url = 'https://auth.r357.eu/api/auth/login'
         credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS

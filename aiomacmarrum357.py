@@ -270,7 +270,7 @@ class Macmarrum357():
 
         self.session = aiohttp.ClientSession(connector=self.mk_connector(), timeout=self.mk_timeout(), cookie_jar=self.mk_cookie_jar())
         # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
-        await self.refresh_or_login_and_dump_cookies(macmarrum_log)
+        await self.refresh_or_log_in_and_dump_cookies(macmarrum_log)
         run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
 
         if should_record:
@@ -509,7 +509,7 @@ class Macmarrum357():
                 token_log.debug(f"refresh_token_in_a_loop attempt {attempt}")
                 if self.session.closed:
                     break
-                await self.refresh_or_login_and_dump_cookies(token_log)
+                await self.refresh_or_log_in_and_dump_cookies(token_log)
                 # query account to see if the new token works
                 url = 'https://auth.r357.eu/api/account'
                 token = self.get_cookie(c.TOKEN).value
@@ -528,17 +528,17 @@ class Macmarrum357():
 
         await refresh_token_in_a_loop()
 
-    async def refresh_or_login_and_dump_cookies(self, logger=macmarrum_log):
-        macmarrum_log.debug('refresh_or_login_and_dump_cookies')
-        # try to refresh the token before falling back to login
-        is_to_login = True
+    async def refresh_or_log_in_and_dump_cookies(self, logger=macmarrum_log):
+        macmarrum_log.debug('refresh_or_log_in_and_dump_cookies')
+        # try to refresh the token before falling back to logging in
+        is_to_log_in = True
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
         if refresh_token_cookie.value:
-            is_to_login = False
+            is_to_log_in = False
             if time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
-                is_to_login = not await self.refresh_token(logger)
-        if is_to_login:
-            await self.login(logger)
+                is_to_log_in = not await self.refresh_token(logger)
+        if is_to_log_in:
+            await self.log_in(logger)
         self.dump_cookies_if_changed()
 
     async def refresh_token(self, logger):
@@ -555,18 +555,18 @@ class Macmarrum357():
                 logger.debug(f"refresh_token {resp.status}")
                 return False
 
-    async def login(self, logger):
+    async def log_in(self, logger):
         url = 'https://auth.r357.eu/api/auth/login'
         credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
-        logger.debug(f"login {url} {headers} {credentials}")
+        logger.debug(f"log_in {url} {headers} {credentials}")
         async with self.session.post(url, headers=headers, json=credentials) as resp:
             if resp.status == 200:
-                logger.debug(f"login {resp.status}")
+                logger.debug(f"log_in {resp.status}")
                 await self.update_and_persist_tokens_from_resp(resp, logger)
                 return True
             else:
-                logger.error(f"login {resp.status}")
+                logger.error(f"log_in {resp.status}")
                 return False
 
     async def update_and_persist_tokens_from_resp(self, resp, logger=macmarrum_log):
