@@ -25,6 +25,8 @@ Nagrywanie ze zmianą pliku o pełnej godzinie od momentu uruchomienia do półn
 a po każdej zmianie uruchomienie w tle polecenia `aac-to-m4a`\
 `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
 
+*Wskazówka: wartości dla opcji `--play-with=` oraz `--record=` są w formacie JSON*
+
 Przykładowy skrypt `aac-to-m4a` – ścieżka do nagranego pliku jest przekazywana jako pierwszy argument
 
 ```shell
@@ -32,8 +34,6 @@ Przykładowy skrypt `aac-to-m4a` – ścieżka do nagranego pliku jest przekazyw
 export AV_LOG_FORCE_NOCOLOR=1
 exec /usr/bin/ffmpeg -loglevel warning -i "$1" -acodec copy "${1%.aac}.m4a"
 ```
-
-*Wskazówka: wartości dla opcji `--play-with=` oraz `--record=` są w formacie JSON*
 
 Jeżeli w wierszu poleceń podane jest `--sleep=`, np. `--sleep=30`,
 **aiomacmarrum357.py** czeka określoną ilość sekund przed uruchomieniem.
@@ -43,8 +43,8 @@ Jeżeli w wierszu poleceń podane jest `--sleep=`, np. `--sleep=30`,
 Odtwarzanie stumienia na żywo z lokalnego serwera HTTP na hoście `localhost` przy użyciu **mpv**\
 `mpv http://localhost:8357/live`
 
-Odtwarzanie z lokalnego serwera HTTP na hoście `localhost`, od początku nagrywanego pliku, a potem na żywo, przy użyciu **mpv**\
-`mpv http://localhost:8357/file-then-live`
+Odtwarzanie z lokalnego serwera HTTP na hoście `192.168.0.1`, od początku nagrywanego pliku, a potem na żywo, przy użyciu **mpv**\
+`mpv http://192.168.0.1:8357/file-then-live`
 
 ### Konfiguracja
 
