@@ -622,11 +622,11 @@ class Macmarrum357():
 
     async def handle_request_live(self, request: web.Request):
         queue, q = self.register_stream_consumer_to_get_queue()
-        web_log_request(f"handle_request_live queue #{q}", request)
+        web_log_request(f"handle_request_live - queue #{q}", request)
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
-                web_log.debug(f"handle_request_live queue #{q} - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
+                web_log.debug(f"handle_request_live - queue #{q} - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
             await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
         server_resp = web.Response(content_type=self.content_type)
@@ -640,7 +640,7 @@ class Macmarrum357():
             while (duration := monotonic() - t) < handler_start_buffer_sec:
                 buffer += await queue.get()
                 i += 1
-            web_log.debug(f"handle_request_live queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+            web_log.debug(f"handle_request_live - queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         while True:
             if buffer:
                 chunk = buffer
@@ -668,7 +668,7 @@ class Macmarrum357():
         await server_resp.prepare(request)
         is_file_path = self.file_path is not None
         if is_file_path:
-            web_log.debug(f"handle_request_file_then_live from {self.file_path.name}")
+            web_log.debug(f"handle_request_file_then_live - from {self.file_path.name}")
             async with aiofiles.open(self.file_path, 'rb') as fi:
                 while chunk := await fi.read(self.ITER_FILE_CHUNK_SIZE):
                     try:
@@ -687,9 +687,9 @@ class Macmarrum357():
             while (duration := monotonic() - t) < handler_start_buffer_sec:
                 buffer += await queue.get()
                 i += 1
-            web_log.debug(f"handle_request_file_then_live queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+            web_log.debug(f"handle_request_file_then_live - queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         else:
-            web_log.debug(f"handle_request_file_then_live from queue #{q}")
+            web_log.debug(f"handle_request_file_then_live - from queue #{q}")
         while True:
             if buffer:
                 chunk = buffer
@@ -706,7 +706,7 @@ class Macmarrum357():
 
 def web_log_request(prefix: str, request: web.Request):
     v = request.version
-    web_log.debug(f"{prefix} - {request.remote} {request.method} {request.path} HTTP/{v.major}.{v.minor} {request.headers.get(c.USER_AGENT)}")
+    web_log.info(f"{prefix} - {request.remote} {request.method} {request.path} HTTP/{v.major}.{v.minor} {request.headers.get(c.USER_AGENT)}")
 
 
 def mk_simple_cookie(name: str, value: str, expires: str):
