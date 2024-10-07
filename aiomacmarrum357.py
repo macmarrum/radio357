@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta
 from http.cookies import SimpleCookie
 from pathlib import Path
 from time import time, monotonic, sleep
-from typing import Callable, Sequence
+from typing import Callable
 
 import aiofiles
 import aiohttp
@@ -35,6 +35,7 @@ from aiohttp.web_runner import GracefulExit
 macmarrum_log = logging.getLogger('macmarrum357')
 token_log = logging.getLogger('macmarrum357.token')
 web_log = logging.getLogger('macmarrum357.web')
+recorder_log = logging.getLogger('macmarrum357.recorder')
 
 
 def get_appdata() -> Path:
@@ -109,11 +110,19 @@ def quote(x):
     return shlex.quote(x)
 
 
-class NoOutputError(RuntimeError):
+class NoConsumersError(RuntimeError):
     pass
 
 
+StrIntDt = str | int | datetime
+SwitchFileTimesType = list[StrIntDt] | tuple[StrIntDt]
+
+
 class c:
+    MACMARRUM357 = 'macmarrum357'
+    MACMARRUM357_RECORDER_KWARGS = 'macmarrum357.recorder_kwargs'
+    MACMARRUM357_HOST = 'macmarrum357.host'
+    MACMARRUM357_PORT = 'macmarrum357.port'
     LIVE_STREAM_URL = 'live_stream_url'
     LIVE_STREAM_LOCATION_REPLACEMENTS = 'live_stream_location_replacements'
     EMAIL = 'email'
@@ -200,8 +209,8 @@ class Macmarrum357():
     TOKEN_VALIDITY_DELTA = timedelta(minutes=60)
     ITER_CHUNKED_UP_TO_SIZE = 4 * 1024
     HANDLER_START_BUFFER_SEC = 0
-    HANDLER_CONTENT_TYPE_WAIT_MAX_ITER = 5_000
-    HANDLER_CONTENT_TYPE_WAIT_SEC = 0.1
+    CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER = 222
+    CONSUMER_CONTENT_TYPE_WAIT_SEC = 0.1
     QUEUE_MAX_LEN = 44
     QUEUE_COUNT_LIMIT = sys.maxsize
     QUEUE_FULL_MAX_PUT_ATTEMPTS = 111
@@ -217,7 +226,7 @@ class Macmarrum357():
     _5M_AS_SECONDS = 5 * 60
 
     def __init__(self, web_app: web.Application = None):
-        self.init_datetime = datetime.now(timezone.utc).astimezone()
+        self.init_datetime = datetime.now().astimezone()
         self.web_app = web_app
         macmarrum_log.info(f"START Macmarrum357")
         self.conf = {}
@@ -229,6 +238,7 @@ class Macmarrum357():
         self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
         self._consumer_queues: list[tuple[asyncio.Queue, int]] = []
         self.has_consumers = False
+        self.fo = None
         self.file_path: Path = None
         self.content_type = None
 
@@ -262,30 +272,13 @@ class Macmarrum357():
             sys.exit(f"brak email i/lub password w {self.config_toml_path}")
         self.conf = conf
 
-    async def run_client(self, output_dir: str | Path = None, filename: str | Callable | None = None,
-                         switch_file_times: Sequence[str | int | datetime] = None,
-                         on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None):
+    async def run_client(self):
         self.is_playing_or_recoding = True
-        should_record = switch_file_times is not None
-
         self.session = aiohttp.ClientSession(connector=self.mk_connector(), timeout=self.mk_timeout(), cookie_jar=self.mk_cookie_jar())
         # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
         await self.refresh_or_log_in_and_dump_cookies(macmarrum_log)
         run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
-
-        if should_record:
-            if output_dir is None:
-                output_dir = Path().absolute()
-            if filename is None:
-                filename = mk_filename
-            switch_file_datetime = SwitchFileDateTime(switch_file_times)
-            count = switch_file_datetime.count
-            switch_file_datetime_iter = switch_file_datetime.mk_iter()
-            start_output_file_args = (output_dir, filename, switch_file_datetime_iter, count)
-
         resp = None
-        fo = None
-        end_dt = None
         i = 0
         headers = self.UA_HEADERS | self.AE_HEADERS
         while True:
@@ -306,11 +299,6 @@ class Macmarrum357():
                         resp.raise_for_status()
                         self.content_type = resp.headers.get(c.CONTENT_TYPE, c.APPLICATION_OCTET_STREAM)
                         break
-                if should_record:
-                    suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
-                    if not fo or fo.closed:
-                        self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
-                    self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
                 macmarrum_log.debug(f"{resp.status} - headers {dict(resp.headers)}")
                 chunk_num = 0
                 async for chunk in resp.content.iter_chunked(self.ITER_CHUNKED_UP_TO_SIZE):
@@ -329,60 +317,49 @@ class Macmarrum357():
                                         macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
                                         await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
                                     else:
-                                        macmarrum_log.debug(f"exit - queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded")
+                                        macmarrum_log.debug(f"exit: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded")
                                         raise
-                    if should_record:
-                        await fo.write(chunk)
-                        if end_dt and datetime.now(timezone.utc) >= end_dt:
-                            await fo.close()
-                            self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
-                            self.file_path, fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
-                            self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
-                    elif not self.has_consumers:
-                        macmarrum_log.info('exit - no consumers and not recording')
-                        raise NoOutputError()
+                    else:
+                        macmarrum_log.info('exit: no consumers')
+                        raise NoConsumersError()
             except asyncio.queues.QueueFull:
                 break
-            except NoOutputError:
+            except NoConsumersError:
                 break
             except Exception as e:
-                # https://docs.python.org/3/library/exceptions.html#StopIteration
-                if isinstance(e, RuntimeError) and isinstance(e.__cause__, StopIteration):
-                    macmarrum_log.debug('exit - end of switch_file_times')
-                    break
+                i += 1
+                if i > 60:
+                    sec = 3600
+                elif i > 50:
+                    sec = 600
+                elif i > 40:
+                    sec = 300
+                elif i > 30:
+                    sec = 60
+                elif i > 20:
+                    sec = 30
+                elif i > 10:
+                    sec = 5
+                elif i > 5:
+                    sec = 2
+                elif i > 1:
+                    sec = 1
                 else:
-                    i += 1
-                    if i > 60:
-                        sec = 3600
-                    elif i > 50:
-                        sec = 600
-                    elif i > 40:
-                        sec = 300
-                    elif i > 30:
-                        sec = 60
-                    elif i > 20:
-                        sec = 30
-                    elif i > 10:
-                        sec = 5
-                    elif i > 5:
-                        sec = 2
-                    elif i > 1:
-                        sec = 1
-                    else:
-                        sec = 0
-                    macmarrum_log.error(f"{type(e).__name__} {e}")
-                    if i == 1 or sec >= 600:
-                        macmarrum_log.error(traceback.format_exc())
-                    if sec:
-                        macmarrum_log.debug(f"sleep {sec} sec before retrying")
-                        await asyncio.sleep(sec)
+                    sec = 0
+                macmarrum_log.error(f"{type(e).__name__} {e}")
+                if i == 1 or sec >= 600:
+                    macmarrum_log.error(traceback.format_exc())
+                if sec:
+                    macmarrum_log.debug(f"sleep {sec} sec before retrying")
+                    await asyncio.sleep(sec)
         # end while
         if resp and not resp.closed:
             resp.close()
         if not self.session.closed:
             await self.session.close()
-        if fo and not fo.closed:
-            await fo.close()
+        if self.fo and not self.fo.closed:
+            macmarrum_log.debug(f"run_client - close self.fo")
+            await self.fo.close()
         self.is_playing_or_recoding = False
         await run_periodic_token_refresh_task
         macmarrum_log.info(f"STOP Macmarrum357")
@@ -417,6 +394,51 @@ class Macmarrum357():
             cookie_jar.load(self.aiohttp_cookiejar_pickle_path)
         return cookie_jar
 
+    async def run_recorder(self, output_dir: str | Path = None, filename: str | Callable | None = None,
+                           switch_file_times: SwitchFileTimesType = None,
+                           on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None):
+        queue, q = self.register_stream_consumer_to_get_queue()
+        if output_dir is None:
+            output_dir = Path().absolute()
+        if filename is None:
+            filename = mk_filename
+        if switch_file_times is None:
+            switch_file_times = [datetime.now().astimezone().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)]
+        switch_file_datetime = SwitchFileDateTime(switch_file_times)
+        count = switch_file_datetime.count
+        switch_file_datetime_iter = switch_file_datetime.mk_iter()
+        start_output_file_args = (output_dir, filename, switch_file_datetime_iter, count)
+        i = 0
+        while self.content_type is None:
+            if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
+                recorder_log.debug(f"run_recorder - queue #{q} - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
+                break
+            await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
+        suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
+        self.file_path, self.fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
+        self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+        try:
+            while True:
+                chunk = await queue.get()
+                await self.fo.write(chunk)
+                if end_dt and datetime.now(timezone.utc) >= end_dt:
+                    await self.fo.close()
+                    self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
+                    suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
+                    self.file_path, self.fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
+                    self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+        except Exception as e:
+            # https://docs.python.org/3/library/exceptions.html#StopIteration
+            if isinstance(e, RuntimeError) and isinstance(e.__cause__, StopIteration):
+                recorder_log.debug('run_recorder - exit: end of switch_file_times')
+            else:
+                recorder_log.critical(f"run_recorder - {type(e).__name__}: {e}")
+        finally:
+            self.unregister_stream_consumer(queue, q)
+            if not self.fo.closed:
+                recorder_log.debug(f"run_recorder - close self.fo")
+                await self.fo.close()
+
     @classmethod
     async def start_output_file(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int, suffix: str):
         file_num, start, end, duration = next(switch_file_datetime_iterator)
@@ -433,11 +455,11 @@ class Macmarrum357():
             else:
                 new_stem = f"{stem}~1"
             output_path = output_path.with_stem(new_stem)
-            macmarrum_log.warning(f"change filename to {new_stem}{output_path.suffix} - file exists: {old_path}. ")
+            recorder_log.warning(f"change filename to {new_stem}{output_path.suffix}: file exists {old_path}")
             is_filename_changed = True
         if not is_filename_changed and 'a' in cls.OUTPUT_FILE_MODE and output_path.exists():
-            macmarrum_log.warning(f"append to an exiting file {output_path}")
-        macmarrum_log.info(f"RECORD {file_num}/{count} {duration} to {output_path}")
+            recorder_log.warning(f"append to an exiting file {output_path}")
+        recorder_log.info(f"RECORD {file_num}/{count} {duration} to {output_path}")
         fo = await aiofiles.open(output_path, cls.OUTPUT_FILE_MODE)
         return output_path, fo, file_num, end
 
@@ -448,7 +470,7 @@ class Macmarrum357():
                 on_file_start(path)
             else:
                 args = [on_file_start, str(path)]
-                macmarrum_log.debug(f"SPAWN [{' '.join(quote(a) for a in args)}]")
+                recorder_log.debug(f"spawn_on_file_start - [{' '.join(quote(a) for a in args)}]")
                 subprocess.Popen(args)
 
     @staticmethod
@@ -458,7 +480,7 @@ class Macmarrum357():
                 on_file_end(path)
             else:
                 args = [on_file_end, str(path)]
-                macmarrum_log.info(f"SPAWN [{' '.join(quote(a) for a in args)}]")
+                recorder_log.info(f"spawn_on_file_end - [{' '.join(quote(a) for a in args)}]")
                 subprocess.Popen(args)
 
     async def init_r357_and_set_cookies_changed_if_needed(self, logger=macmarrum_log):
@@ -603,10 +625,10 @@ class Macmarrum357():
         web_log_request(f"handle_request_live queue #{q}", request)
         i = 0
         while self.content_type is None:
-            if (i := i + 1) > self.HANDLER_CONTENT_TYPE_WAIT_MAX_ITER:
-                web_log.debug(f"handle_request_live queue #{q} - content_type {self.content_type} - after {i} * {self.HANDLER_CONTENT_TYPE_WAIT_SEC} sec")
+            if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
+                web_log.debug(f"handle_request_live queue #{q} - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
-            await asyncio.sleep(self.HANDLER_CONTENT_TYPE_WAIT_SEC)
+            await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
         server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
@@ -637,10 +659,10 @@ class Macmarrum357():
         web_log_request('handle_request_file_then_live', request)
         i = 0
         while self.content_type is None:
-            if (i := i + 1) > self.HANDLER_CONTENT_TYPE_WAIT_MAX_ITER:
-                web_log.debug(f"handle_request_file_then_live - content_type {self.content_type} - after {i} * {self.HANDLER_CONTENT_TYPE_WAIT_SEC} sec")
+            if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
+                web_log.debug(f"handle_request_file_then_live - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
-            await asyncio.sleep(self.HANDLER_CONTENT_TYPE_WAIT_SEC)
+            await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
         server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
@@ -716,11 +738,11 @@ class SwitchFileDateTime:
     RX_H_MM_SS = re.compile(r'^(\*|\d{1,2})(:\d{1,2}){0,2}$')
     FMT = '%H:%M:%S'
 
-    def __init__(self, switch_file_times: Sequence[str | int | datetime]):
+    def __init__(self, switch_file_times: SwitchFileTimesType):
         self._is_all_datetime = None
         self._switch_file_times = switch_file_times
         sft_for_log = [e.strftime(self.FMT) for e in switch_file_times] if self.is_all_datetime else switch_file_times
-        macmarrum_log.debug(f"SwitchFileDateTime switch_file_times={sft_for_log}")
+        recorder_log.debug(f"SwitchFileDateTime switch_file_times={sft_for_log}")
         self._is_every_hour = None
         self._validate()
         self._parsed_switch_file_times = None
@@ -733,6 +755,13 @@ class SwitchFileDateTime:
         if self.is_every_hour:
             assert switch_file_times_len == 2, f"expected size == 2, got {switch_file_times_len}"
         assert self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times)
+        self.make_switch_file_times_aware_if_needed()
+
+    def make_switch_file_times_aware_if_needed(self):
+        if self.is_all_datetime:
+            for i, dt in enumerate(self._switch_file_times):
+                if dt.tzinfo is None:
+                    self._switch_file_times[i] = dt.astimezone()
 
     @property
     def is_all_datetime(self):
@@ -774,11 +803,12 @@ class SwitchFileDateTime:
             i = 0
             for e in self.mk_iter():
                 i += 1
-                macmarrum_log.debug(f"SwitchFileDateTime {e[0]}: [{e[1].strftime(FMT)}, {e[2].strftime(FMT)}]")
+                recorder_log.debug(f"SwitchFileDateTime {e[0]}: [{e[1].strftime(FMT)}, {e[2].strftime(FMT)}]")
             self._count = i
         return self._count
 
     def _parse(self):
+        assert not self.is_all_datetime
         parsed_switch_file_times = []
         for elem in self._switch_file_times:
             if isinstance(elem, int):
@@ -802,15 +832,15 @@ class SwitchFileDateTime:
                 s = int(s)
             parsed_switch_file_times.append((h, m, s))
         self._parsed_switch_file_times = parsed_switch_file_times
-        macmarrum_log.debug(f"SwitchFileDateTime {parsed_switch_file_times=}")
+        recorder_log.debug(f"SwitchFileDateTime {parsed_switch_file_times=}")
         return parsed_switch_file_times
 
     def _mk_iterator_for_datetime_args(self, _now: datetime = None, _debug=False) -> SwitchFileIterator:
         # for testing, _now can be set to specific time
-        start = end = _now or datetime.now(timezone.utc).astimezone()
+        start = end = _now or datetime.now().astimezone()
         for file_num, dt in enumerate(self._switch_file_times, start=1):
             # new start is previous end, and real time for debugging
-            start = end if not _debug else datetime.now(timezone.utc).astimezone()
+            start = end if not _debug else datetime.now().astimezone()
             # end is the entry from the list
             end = dt
             duration = end - start
@@ -818,12 +848,12 @@ class SwitchFileDateTime:
 
     def _mk_iterator_for_regular_args(self, _now: datetime = None, _debug=False) -> SwitchFileIterator:
         # for testing, _now can be set to specific time
-        start = end = _now or datetime.now(timezone.utc).astimezone()
+        start = end = _now or datetime.now().astimezone()
         file_num = 0
         h_m_s: tuple[int | None, int, int]
         for i, h_m_s in enumerate(self.parsed_switch_file_times):
             # new start is previous end, and real time for debugging
-            start = end if not _debug else datetime.now(timezone.utc).astimezone()
+            start = end if not _debug else datetime.now().astimezone()
             # end is the entry from the list
             h, m, s = h_m_s
             end = start.replace(hour=h, minute=m, second=s, microsecond=0)
@@ -835,7 +865,7 @@ class SwitchFileDateTime:
 
     def _mk_iterator_for_asterisk_arg0(self, _now: datetime = None, _debug=False) -> SwitchFileIterator:
         # for testing, _now can be set to specific time
-        start = _now or datetime.now(timezone.utc).astimezone()
+        start = _now or datetime.now().astimezone()
         h, m, s = self.parsed_switch_file_times[0]
         final_h, final_m, final_s = self.parsed_switch_file_times[1]
         final_end = start.replace(hour=final_h, minute=final_m, second=final_s, microsecond=0)
@@ -846,7 +876,7 @@ class SwitchFileDateTime:
         yield file_num, start, end, end - start
         while end < final_end:
             # new start is previous end, and real time for debugging
-            start = end if not _debug else datetime.now(timezone.utc).astimezone()
+            start = end if not _debug else datetime.now().astimezone()
             # new end is start + 1h
             end = start + self.HOURS1
             # end is at the specified minutes and seconds of the hour
@@ -873,18 +903,18 @@ class MyPolicy(asyncio.DefaultEventLoopPolicy):
         return asyncio.SelectorEventLoop(selector)
 
 
-def get_record_kwargs():
+def get_recorder_kwargs():
     for arg in sys.argv:
         if arg.startswith('--record='):
             args_as_json = arg.removeprefix('--record=')
-            macmarrum_log.debug(f"{args_as_json=}")
+            recorder_log.debug(f"{args_as_json=}")
             record_args = json.loads(args_as_json)
-            macmarrum_log.debug(f"{record_args=}")
+            recorder_log.debug(f"{record_args=}")
             return record_args
     return {}
 
 
-async def spawn_player_if_requested(macmarrum357, host, port):
+def spawn_player_if_requested(macmarrum357, host, port):
     for arg in sys.argv:
         if arg.startswith('--play-with='):
             player = arg.removeprefix('--play-with=')
@@ -906,16 +936,19 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     """https://docs.aiohttp.org/en/stable/web_advanced.html#aiohttp-web-cleanup-ctx
     a code before yield is an initialization stage (called on startup), a code after yield is executed on cleanup.
     """
-    macmarrum357 = app['macmarrum357']
-    kwargs = app['macmarrum357.run_client_kwargs']
-    live_stream_client_task = asyncio.create_task(macmarrum357.run_client(**kwargs))
-    host = app['macmarrum357.host']
-    port = app['macmarrum357.port']
-    player_task = asyncio.create_task(spawn_player_if_requested(macmarrum357, host, port))
+    macmarrum357 = app[c.MACMARRUM357]
+    live_stream_client_task = asyncio.create_task(macmarrum357.run_client())
+    if recorder_kwargs := app[c.MACMARRUM357_RECORDER_KWARGS]:
+        live_stream_recorder_task = asyncio.create_task(macmarrum357.run_recorder(**recorder_kwargs))
+    host = app[c.MACMARRUM357_HOST]
+    port = app[c.MACMARRUM357_PORT]
+    spawn_player_if_requested(macmarrum357, host, port)
     yield
-    player_task.cancel()
+    if recorder_kwargs:
+        live_stream_recorder_task.cancel()
     live_stream_client_task.cancel()
-    await player_task
+    if recorder_kwargs:
+        await live_stream_recorder_task
     await live_stream_client_task
 
 
@@ -928,11 +961,11 @@ def main():
     # https://docs.aiohttp.org/en/stable/web_advanced.html#background-tasks
     configure_logging()
     sleep_if_requested()
-    record_kwargs = get_record_kwargs()
+    recorder_kwargs = get_recorder_kwargs()
     live_stream_server_app = web.Application()
     macmarrum357 = Macmarrum357(live_stream_server_app)
-    live_stream_server_app['macmarrum357'] = macmarrum357
-    live_stream_server_app['macmarrum357.run_client_kwargs'] = record_kwargs
+    live_stream_server_app[c.MACMARRUM357] = macmarrum357
+    live_stream_server_app[c.MACMARRUM357_RECORDER_KWARGS] = recorder_kwargs
     live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
     live_stream_server_app.on_shutdown.append(on_web_app_shutdown)
     live_stream_server_app.add_routes([
@@ -941,8 +974,8 @@ def main():
     ])
     host = macmarrum357.conf.get(c.HOST, 'localhost')
     port = macmarrum357.conf.get(c.PORT, 8357)
-    live_stream_server_app['macmarrum357.host'] = host
-    live_stream_server_app['macmarrum357.port'] = port
+    live_stream_server_app[c.MACMARRUM357_HOST] = host
+    live_stream_server_app[c.MACMARRUM357_PORT] = port
     if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
         asyncio.set_event_loop_policy(MyPolicy())
     web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log.info)
