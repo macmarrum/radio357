@@ -922,13 +922,15 @@ def spawn_player_if_requested(macmarrum357, host, port):
             if not isinstance(player_args, list):
                 player_args = [player_args]
             break
-        elif arg == '--play' and (player_args := macmarrum357.conf.get(c.PLAYER_ARGS)):
+        elif arg == '--play':
+            if not (player_args := macmarrum357.conf.get(c.PLAYER_ARGS)):
+                macmarrum_log.error(f"spawn_player - `--play` requested but no {c.PLAYER_ARGS} in config")
             break
     else:  # no break
         player_args = None
     if player_args:
         player_args.append(f"http://{host}:{port}/live")
-        macmarrum_log.info(f"spawn_player {' '.join(quote(a) for a in player_args)}")
+        macmarrum_log.info(f"spawn_player - {' '.join(quote(a) for a in player_args)}")
         subprocess.Popen(player_args)
 
 
