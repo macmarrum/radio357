@@ -358,7 +358,7 @@ class Macmarrum357():
         if not self.session.closed:
             await self.session.close()
         if self.fo and not self.fo.closed:
-            macmarrum_log.debug(f"run_client - close self.fo")
+            macmarrum_log.debug(f"close self.fo")
             await self.fo.close()
         self.is_playing_or_recoding = False
         await run_periodic_token_refresh_task
@@ -430,13 +430,13 @@ class Macmarrum357():
         except Exception as e:
             # https://docs.python.org/3/library/exceptions.html#StopIteration
             if isinstance(e, RuntimeError) and isinstance(e.__cause__, StopIteration):
-                recorder_log.debug('run_recorder - exit: end of switch_file_times')
+                recorder_log.debug('exit: end of switch_file_times')
             else:
-                recorder_log.critical(f"run_recorder - {type(e).__name__}: {e}")
+                recorder_log.critical(f"{type(e).__name__}: {e}")
         finally:
             self.unregister_stream_consumer(queue, q)
             if not self.fo.closed:
-                recorder_log.debug(f"run_recorder - close self.fo")
+                recorder_log.debug(f"close self.fo")
                 await self.fo.close()
 
     @classmethod
