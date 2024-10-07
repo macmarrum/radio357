@@ -266,7 +266,11 @@ class Macmarrum357():
         else:
             with self.config_toml_path.open('rb') as fi:
                 conf = tomllib.load(fi)
-                macmarrum_log.debug(f"load_config {self.config_toml_path.name} {conf}")
+            conf_obfuscated = conf.copy()
+            for k, v in conf_obfuscated.items():
+                if k in [c.EMAIL, c.PASSWORD]:
+                    conf_obfuscated[k] = '*' * len(v)
+            macmarrum_log.debug(f"load_config - {self.config_toml_path.name} - {conf_obfuscated}")
         if not conf.get(c.EMAIL) or not conf.get(c.PASSWORD):
             macmarrum_log.critical(f"{self.config_toml_path} is missing email and/or password values")
             sys.exit(f"brak email i/lub password w {self.config_toml_path}")
@@ -284,13 +288,13 @@ class Macmarrum357():
         while True:
             url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
             try:
-                macmarrum_log.debug(f"get {url} {headers}")
+                macmarrum_log.debug(f"GET {url} {headers}")
                 while True:  # handle redirects
                     if resp and not resp.closed:
                         resp.close()
                     resp = await self.session.get(url, headers=headers, allow_redirects=False)
                     if resp.status in [301, 302, 303, 307, 308] and (location := resp.headers.get(c.LOCATION)):
-                        macmarrum_log.debug(f"{resp.status} - location: {location}")
+                        macmarrum_log.debug(f"GET => {resp.status} - {c.LOCATION}: {location}")
                         if replacement := self.location_replacements.get(location):
                             macmarrum_log.debug(f"replace location with {replacement}")
                             location = replacement
@@ -299,7 +303,7 @@ class Macmarrum357():
                         resp.raise_for_status()
                         self.content_type = resp.headers.get(c.CONTENT_TYPE, c.APPLICATION_OCTET_STREAM)
                         break
-                macmarrum_log.debug(f"{resp.status} - headers {dict(resp.headers)}")
+                macmarrum_log.debug(f"GET => {resp.status} - {dict(resp.headers)}")
                 chunk_num = 0
                 async for chunk in resp.content.iter_chunked(self.ITER_CHUNKED_UP_TO_SIZE):
                     # see aiohttp.streams.StreamReader._read_nowait -> """Read not more than n bytes, or whole buffer if n == -1"""
@@ -389,7 +393,7 @@ class Macmarrum357():
     def mk_cookie_jar(self):
         cookie_jar = CookieJar()
         exists = self.aiohttp_cookiejar_pickle_path.exists()
-        macmarrum_log.debug(f"mk_cookie_jar from {self.aiohttp_cookiejar_pickle_path.name} - {exists}")
+        macmarrum_log.debug(f"mk_cookie_jar - from {self.aiohttp_cookiejar_pickle_path.name}: {exists}")
         if exists:
             cookie_jar.load(self.aiohttp_cookiejar_pickle_path)
         return cookie_jar
@@ -513,7 +517,7 @@ class Macmarrum357():
         token_log.info(f"run_periodic_token_refresh")
 
         async def refresh_token_in_a_loop():
-            token_log.debug('refresh_token_in_a_loop (sleep until it\'s time)')
+            token_log.debug('refresh_token_in_a_loop - sleep until it\'s time')
             if time() > self.get_cookie(c.R357_PID).expires - self._24H_AS_SECONDS:
                 await self.init_r357_and_set_cookies_changed_if_needed(token_log)
             expires = self.get_cookie(c.TOKEN).expires
@@ -528,7 +532,7 @@ class Macmarrum357():
             attempt = 0
             while True:
                 attempt += 1
-                token_log.debug(f"refresh_token_in_a_loop attempt {attempt}")
+                token_log.debug(f"refresh_token_in_a_loop - attempt {attempt}")
                 if self.session.closed:
                     break
                 await self.refresh_token_or_log_in_and_dump_cookies_if_needed(token_log)
@@ -536,14 +540,14 @@ class Macmarrum357():
                 url = 'https://auth.r357.eu/api/account'
                 token = self.get_cookie(c.TOKEN).value
                 headers = self.UA_HEADERS | {c.AUTHORIZATION: f"{c.BEARER} {token}"}
-                token_log.debug(f'query_account {headers=}')
+                token_log.debug(f'query_account - {headers}')
                 async with self.session.get(url, headers=headers) as resp:
                     if resp.status != 200:  # and self.is_playing_or_recoding:
-                        msg = f"{resp.status} query_account; sleep {5 * attempt} sec before retrying"
+                        msg = f"query_account => {resp.status} - sleep {5 * attempt} sec before retrying"
                         token_log.debug(msg)
                         await asyncio.sleep(5 * attempt)
                     else:
-                        token_log.debug(f"query_account {resp.status}")
+                        token_log.debug(f"query_account => {resp.status}")
                         break
             if self.is_playing_or_recoding:
                 await refresh_token_in_a_loop()
@@ -567,28 +571,26 @@ class Macmarrum357():
         url = 'https://auth.r357.eu/api/auth/refresh'
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
         _json = {c.REFRESHTOKEN: self.get_cookie(c.REFRESH_TOKEN).value}
-        logger.debug(f"refresh_token {url} {headers} {_json}")
+        logger.debug(f"refresh_token - {url} {headers} {_json}")
         async with self.session.post(url, headers=headers, json=_json) as resp:
+            logger.debug(f"refresh_token => {resp.status}")
             if resp.status == 200:
-                logger.debug(f"refresh_token {resp.status}")
                 await self.update_and_persist_tokens_from_resp(resp, logger)
                 return True
             else:
-                logger.debug(f"refresh_token {resp.status}")
                 return False
 
     async def log_in(self, logger):
         url = 'https://auth.r357.eu/api/auth/login'
         credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
-        logger.debug(f"log_in {url} {headers} {credentials}")
+        logger.debug(f"log_in - {url} {headers} {credentials}")
         async with self.session.post(url, headers=headers, json=credentials) as resp:
+            logger.debug(f"log_in => {resp.status}")
             if resp.status == 200:
-                logger.debug(f"log_in {resp.status}")
                 await self.update_and_persist_tokens_from_resp(resp, logger)
                 return True
             else:
-                logger.error(f"log_in {resp.status}")
                 return False
 
     async def update_and_persist_tokens_from_resp(self, resp, logger=macmarrum_log):
@@ -610,7 +612,7 @@ class Macmarrum357():
         self.is_cookies_changed = True
 
     def dump_cookies_if_changed(self):
-        macmarrum_log.debug(f"dump_cookies_if_changed - {self.is_cookies_changed}")
+        macmarrum_log.debug(f"dump_cookies_if_changed: {self.is_cookies_changed}")
         if not self.is_cookies_changed:
             return
         cookie_jar = self.session.cookie_jar
@@ -958,6 +960,11 @@ def on_web_app_shutdown(app):
     raise GracefulExit()
 
 
+def web_app_logger(message: str):
+    for line in message.splitlines(keepends=False):
+        web_log.info(line)
+
+
 def main():
     """Run Macmarrum357 (live-stream client) and a live-stream server app"""
     # https://docs.aiohttp.org/en/stable/web_advanced.html#background-tasks
@@ -980,7 +987,7 @@ def main():
     live_stream_server_app[c.MACMARRUM357_PORT] = port
     if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
         asyncio.set_event_loop_policy(MyPolicy())
-    web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log.info)
+    web.run_app(app=live_stream_server_app, host=host, port=port, print=web_app_logger)
 
 
 if __name__ == '__main__':
