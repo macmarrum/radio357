@@ -276,7 +276,7 @@ class Macmarrum357():
         self.is_playing_or_recoding = True
         self.session = aiohttp.ClientSession(connector=self.mk_connector(), timeout=self.mk_timeout(), cookie_jar=self.mk_cookie_jar())
         # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
-        await self.refresh_or_log_in_and_dump_cookies(macmarrum_log)
+        await self.refresh_token_or_log_in_and_dump_cookies_if_needed(macmarrum_log)
         run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
         resp = None
         i = 0
@@ -470,7 +470,7 @@ class Macmarrum357():
                 on_file_start(path)
             else:
                 args = [on_file_start, str(path)]
-                recorder_log.debug(f"spawn_on_file_start - [{' '.join(quote(a) for a in args)}]")
+                recorder_log.debug(f"spawn_on_file_start - {' '.join(quote(a) for a in args)}")
                 subprocess.Popen(args)
 
     @staticmethod
@@ -480,7 +480,7 @@ class Macmarrum357():
                 on_file_end(path)
             else:
                 args = [on_file_end, str(path)]
-                recorder_log.info(f"spawn_on_file_end - [{' '.join(quote(a) for a in args)}]")
+                recorder_log.info(f"spawn_on_file_end - {' '.join(quote(a) for a in args)}")
                 subprocess.Popen(args)
 
     async def init_r357_and_set_cookies_changed_if_needed(self, logger=macmarrum_log):
@@ -531,7 +531,7 @@ class Macmarrum357():
                 token_log.debug(f"refresh_token_in_a_loop attempt {attempt}")
                 if self.session.closed:
                     break
-                await self.refresh_or_log_in_and_dump_cookies(token_log)
+                await self.refresh_token_or_log_in_and_dump_cookies_if_needed(token_log)
                 # query account to see if the new token works
                 url = 'https://auth.r357.eu/api/account'
                 token = self.get_cookie(c.TOKEN).value
@@ -550,8 +550,8 @@ class Macmarrum357():
 
         await refresh_token_in_a_loop()
 
-    async def refresh_or_log_in_and_dump_cookies(self, logger=macmarrum_log):
-        macmarrum_log.debug('refresh_or_log_in_and_dump_cookies')
+    async def refresh_token_or_log_in_and_dump_cookies_if_needed(self, logger=macmarrum_log):
+        logger.debug('refresh_token_or_log_in_and_dump_cookies_if_needed')
         # try to refresh the token before falling back to logging in
         is_to_log_in = False
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
@@ -593,7 +593,7 @@ class Macmarrum357():
 
     async def update_and_persist_tokens_from_resp(self, resp, logger=macmarrum_log):
         d = await resp.json()
-        logger.debug(f"update_and_persist_tokens_from_resp resp.json()={d}")
+        logger.debug(f"update_and_persist_tokens_from_resp - {d}")
         expires_int = int((datetime.now().replace(microsecond=0) + self.TOKEN_VALIDITY_DELTA).timestamp())
         expires_str = email.utils.formatdate(expires_int, usegmt=True)
         name_to_cookie = {
@@ -618,7 +618,7 @@ class Macmarrum357():
             cookie_jar.save(self.aiohttp_cookiejar_pickle_path)
             self.is_cookies_changed = False
             for morsel in cookie_jar:
-                macmarrum_log.debug(f"dump_cookies_if_changed {morsel.OutputString()}")
+                macmarrum_log.debug(f"dump_cookies_if_changed - {morsel.OutputString()}")
 
     async def handle_request_live(self, request: web.Request):
         queue, q = self.register_stream_consumer_to_get_queue()
