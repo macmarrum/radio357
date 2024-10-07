@@ -246,11 +246,11 @@ class Macmarrum357():
         queue, q = next(self.queue_gen)
         self._consumer_queues.append((queue, q))
         self.has_consumers = True
-        macmarrum_log.debug(f"register_stream_consumer #{q}")
+        macmarrum_log.debug(f"register_stream_consumer - queue #{q}")
         return queue, q
 
     def unregister_stream_consumer(self, queue, q):
-        macmarrum_log.debug(f"unregister_stream_consumer #{q}")
+        macmarrum_log.debug(f"unregister_stream_consumer - queue #{q}")
         self._consumer_queues.remove((queue, q))
         self.has_consumers = len(self._consumer_queues) > 0
 
