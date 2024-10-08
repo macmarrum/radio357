@@ -246,7 +246,7 @@ class Macmarrum357():
         queue, q = next(self.queue_gen)
         self._consumer_queues.append((queue, q))
         self.has_consumers = True
-        macmarrum_log.debug(f"register_stream_consumer - queue #{q}")
+        macmarrum_log.debug(f"register_stream_consumer => queue #{q}")
         return queue, q
 
     def unregister_stream_consumer(self, queue, q):
@@ -507,10 +507,12 @@ class Macmarrum357():
         return MacmarrumCookie(name, '', 0)
 
     async def init_r357(self, logger=macmarrum_log):
-        logger.debug('init_r357')
         url = 'https://checkout.radio357.pl/user/init/'
-        async with self.session.get(url, headers=self.UA_HEADERS) as resp:
-            assert resp.status == 200, f"{resp.status} {await resp.text()}"
+        headers = self.UA_HEADERS
+        logger.debug(f"init_r357 - {url} - {headers}")
+        async with self.session.get(url, headers=headers) as resp:
+            logger.debug(f"init_r357 => {resp.status}")
+            resp.raise_for_status()
             assert self.get_cookie(c.R357_PID).value, f"{c.R357_PID} is missing. This is unexpected."
 
     async def run_periodic_token_refresh(self):
@@ -540,7 +542,8 @@ class Macmarrum357():
                 url = 'https://auth.r357.eu/api/account'
                 token = self.get_cookie(c.TOKEN).value
                 headers = self.UA_HEADERS | {c.AUTHORIZATION: f"{c.BEARER} {token}"}
-                token_log.debug(f'query_account - {headers}')
+                obfuscated_headers = self.UA_HEADERS | {c.AUTHORIZATION: f"{c.BEARER} $token"}
+                token_log.debug(f"query_account - {url} - {obfuscated_headers}")
                 async with self.session.get(url, headers=headers) as resp:
                     if resp.status != 200:  # and self.is_playing_or_recoding:
                         msg = f"query_account => {resp.status} - sleep {5 * attempt} sec before retrying"
@@ -571,7 +574,7 @@ class Macmarrum357():
         url = 'https://auth.r357.eu/api/auth/refresh'
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
         _json = {c.REFRESHTOKEN: self.get_cookie(c.REFRESH_TOKEN).value}
-        logger.debug(f"refresh_token - {url} {headers} {_json}")
+        logger.debug(f"refresh_token - {url} - {headers} - json=$refresh_token")
         async with self.session.post(url, headers=headers, json=_json) as resp:
             logger.debug(f"refresh_token => {resp.status}")
             if resp.status == 200:
@@ -584,7 +587,7 @@ class Macmarrum357():
         url = 'https://auth.r357.eu/api/auth/login'
         credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
-        logger.debug(f"log_in - {url} {headers} {credentials}")
+        logger.debug(f"log_in - {url} - {headers} - json=$credentials")
         async with self.session.post(url, headers=headers, json=credentials) as resp:
             logger.debug(f"log_in => {resp.status}")
             if resp.status == 200:
@@ -595,7 +598,7 @@ class Macmarrum357():
 
     async def update_and_persist_tokens_from_resp(self, resp, logger=macmarrum_log):
         d = await resp.json()
-        logger.debug(f"update_and_persist_tokens_from_resp - {d}")
+        logger.debug(f"update_and_persist_tokens_from_resp - $json")
         expires_int = int((datetime.now().replace(microsecond=0) + self.TOKEN_VALIDITY_DELTA).timestamp())
         expires_str = email.utils.formatdate(expires_int, usegmt=True)
         name_to_cookie = {
@@ -620,7 +623,7 @@ class Macmarrum357():
             cookie_jar.save(self.aiohttp_cookiejar_pickle_path)
             self.is_cookies_changed = False
             for morsel in cookie_jar:
-                macmarrum_log.debug(f"dump_cookies_if_changed - {morsel.OutputString()}")
+                macmarrum_log.debug(f"dump_cookies_if_changed - {morsel.OutputString().replace(morsel.value, '*****')}")
 
     async def handle_request_live(self, request: web.Request):
         queue, q = self.register_stream_consumer_to_get_queue()
