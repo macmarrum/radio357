@@ -266,11 +266,11 @@ class Macmarrum357():
         else:
             with self.config_toml_path.open('rb') as fi:
                 conf = tomllib.load(fi)
-            conf_obfuscated = conf.copy()
-            for k, v in conf_obfuscated.items():
-                if k in [c.EMAIL, c.PASSWORD]:
-                    conf_obfuscated[k] = '*' * len(v)
-            macmarrum_log.debug(f"load_config - {self.config_toml_path.name} - {conf_obfuscated}")
+            obfuscated_conf = conf.copy()
+            for k, v in obfuscated_conf.items():
+                if k in [c.EMAIL, c.PASSWORD] and v:
+                    obfuscated_conf[k] = '*****'
+            macmarrum_log.debug(f"load_config - {self.config_toml_path.name} - {obfuscated_conf}")
         if not conf.get(c.EMAIL) or not conf.get(c.PASSWORD):
             macmarrum_log.critical(f"{self.config_toml_path} is missing email and/or password values")
             sys.exit(f"brak email i/lub password w {self.config_toml_path}")
