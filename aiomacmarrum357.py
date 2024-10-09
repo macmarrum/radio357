@@ -288,7 +288,7 @@ class Macmarrum357():
         while True:
             url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
             try:
-                macmarrum_log.debug(f"GET {url} {headers}")
+                macmarrum_log.debug(f"GET {url} - {headers}")
                 while True:  # handle redirects
                     if resp and not resp.closed:
                         resp.close()
@@ -622,8 +622,10 @@ class Macmarrum357():
         if isinstance(cookie_jar, CookieJar):
             cookie_jar.save(self.aiohttp_cookiejar_pickle_path)
             self.is_cookies_changed = False
-            for morsel in cookie_jar:
-                macmarrum_log.debug(f"dump_cookies_if_changed - {morsel.OutputString().replace(morsel.value, '*****')}")
+            # for morsel in cookie_jar:
+            #     macmarrum_log.debug(f"dump_cookies_if_changed - {morsel.OutputString().replace(morsel.value, '*****')}")
+        else:
+            macmarrum_log.debug(f"dump_cookies_if_changed - unexpected cookie_jar type: {cookie_jar.__class__.__name__}")
 
     async def handle_request_live(self, request: web.Request):
         queue, q = self.register_stream_consumer_to_get_queue()
