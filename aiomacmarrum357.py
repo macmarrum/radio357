@@ -965,7 +965,7 @@ def on_web_app_shutdown(app):
     raise GracefulExit()
 
 
-def web_app_logger(message: str):
+def web_log_info_splitlines(message: str):
     for line in message.splitlines(keepends=False):
         web_log.info(line)
 
@@ -992,7 +992,7 @@ def main():
     live_stream_server_app[c.MACMARRUM357_PORT] = port
     if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
         asyncio.set_event_loop_policy(MyPolicy())
-    web.run_app(app=live_stream_server_app, host=host, port=port, print=web_app_logger)
+    web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines)
 
 
 if __name__ == '__main__':
