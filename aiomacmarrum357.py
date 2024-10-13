@@ -32,6 +32,8 @@ import yarl
 from aiohttp import AsyncResolver, CookieJar, web
 from aiohttp.web_runner import GracefulExit
 
+UTF8 = 'UTF-8'
+
 macmarrum_log = logging.getLogger('macmarrum357')
 token_log = logging.getLogger('macmarrum357.token')
 web_log = logging.getLogger('macmarrum357.web')
@@ -154,9 +156,12 @@ class c:
     CONTENT_TYPE = 'Content-Type'
     AUDIO_MPEG = 'audio/mpeg'
     APPLICATION_OCTET_STREAM = 'application/octet-stream'
+    ICY_METADATA = 'Icy-MetaData'
+    ICY_METAINT = 'icy-metaint'
     HOST = 'host'
     PORT = 'port'
     HANDLER_START_BUFFER_SEC = 'handler_start_buffer_sec'
+    ZERO_AS_BYTES = b'\x00'
 
 
 class Macmarrum357():
@@ -241,6 +246,9 @@ class Macmarrum357():
         self.fo = None
         self.file_path: Path = None
         self.content_type = None
+        self.icy_metaint = 0
+        self.icy_title_bytes = b''
+        self.icy_title_str = ''
 
     def register_stream_consumer_to_get_queue(self):
         queue, q = next(self.queue_gen)
@@ -284,7 +292,7 @@ class Macmarrum357():
         run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
         resp = None
         i = 0
-        headers = self.UA_HEADERS | self.AE_HEADERS
+        headers = self.UA_HEADERS | self.AE_HEADERS | {c.ICY_METADATA: '1'}
         while True:
             url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
             try:
@@ -302,30 +310,28 @@ class Macmarrum357():
                     else:
                         resp.raise_for_status()
                         self.content_type = resp.headers.get(c.CONTENT_TYPE, c.APPLICATION_OCTET_STREAM)
+                        self.icy_metaint = int(resp.headers[c.ICY_METAINT])
                         break
                 macmarrum_log.debug(f"GET => {resp.status} - {dict(resp.headers)}")
                 chunk_num = 0
+                buffer = bytearray()
+                min_buffer_size = self.icy_metaint + 1 + 255
                 async for chunk in resp.content.iter_chunked(self.ITER_CHUNKED_UP_TO_SIZE):
-                    # see aiohttp.streams.StreamReader._read_nowait -> """Read not more than n bytes, or whole buffer if n == -1"""
-                    # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
-                    # chunk_num += 1
-                    if self.has_consumers:
-                        for queue, q in self._consumer_queues:
-                            k = 0
-                            while True:
-                                try:
-                                    queue.put_nowait(chunk)
-                                    break
-                                except asyncio.queues.QueueFull as e:
-                                    if (k := k + 1) <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
-                                        macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
-                                        await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
-                                    else:
-                                        macmarrum_log.debug(f"exit: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded")
-                                        raise
+                    if self.icy_metaint:
+                        buffer += chunk
+                        if len(buffer) > min_buffer_size:
+                            chunk = buffer[:self.icy_metaint]
+                            del buffer[:self.icy_metaint]
+                            icy_title_size = buffer[0] * 16
+                            if icy_title_size:
+                                self.icy_title_bytes = buffer[:1 + icy_title_size]
+                                self.icy_title_str = self.icy_title_bytes.decode(UTF8)
+                                del buffer[:1 + icy_title_size]
+                            else:
+                                del buffer[0]
+                            await self.distribute_to_consumers(chunk, chunk_num)
                     else:
-                        macmarrum_log.info('exit: no consumers')
-                        raise NoConsumersError()
+                        await self.distribute_to_consumers(chunk, chunk_num)
             except asyncio.queues.QueueFull:
                 break
             except NoConsumersError:
@@ -370,6 +376,28 @@ class Macmarrum357():
         if self.web_app:
             await self.web_app.shutdown()
             await self.web_app.cleanup()
+
+    async def distribute_to_consumers(self, chunk, chunk_num):
+        # see aiohttp.streams.StreamReader._read_nowait -> """Read not more than n bytes, or whole buffer if n == -1"""
+        # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
+        # chunk_num += 1
+        if self.has_consumers:
+            for queue, q in self._consumer_queues:
+                k = 0
+                while True:
+                    try:
+                        queue.put_nowait(chunk)
+                        break
+                    except asyncio.queues.QueueFull as e:
+                        if (k := k + 1) <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
+                            macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
+                            await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
+                        else:
+                            macmarrum_log.debug(f"stop: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded")
+                            raise
+        else:
+            macmarrum_log.info('stop: no consumers')
+            raise NoConsumersError()
 
     def mk_connector(self):
         # https://github.com/netblue30/fdns/issues/47
@@ -636,10 +664,15 @@ class Macmarrum357():
                 web_log.debug(f"handle_request_live - queue #{q} - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
             await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
-        server_resp = web.Response(content_type=self.content_type)
+        if self.icy_metaint and request.headers.get(c.ICY_METADATA) == '1':
+            headers = {c.ICY_METAINT: str(self.icy_metaint)}
+        else:
+            headers = None
+        web_log.debug(f"handle_request_live => {self.content_type} - {headers}")
+        server_resp = web.Response(content_type=self.content_type, headers=headers)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
-        buffer = b''
+        buffer = bytearray()
         handler_start_buffer_sec = self.conf.get(c.HANDLER_START_BUFFER_SEC, self.HANDLER_START_BUFFER_SEC)
         if handler_start_buffer_sec:
             i = 0
@@ -648,14 +681,25 @@ class Macmarrum357():
                 buffer += await queue.get()
                 i += 1
             web_log.debug(f"handle_request_live - queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+        icy_title_bytes = b''
+        icy_title_str_to_count = {}
         while True:
             if buffer:
                 chunk = buffer
                 buffer = b''
             else:
                 chunk = await queue.get()
+            if self.icy_metaint:
+                if (count := icy_title_str_to_count.get(self.icy_title_str, 0)) <= 2:
+                    icy_title_str_to_count[self.icy_title_str] = count + 1
+                    icy_title_bytes = self.icy_title_bytes
+                else:
+                    del icy_title_str_to_count[self.icy_title_str]
+                    icy_title_bytes = c.ZERO_AS_BYTES
             try:
                 await server_resp.write(chunk)
+                if icy_title_bytes:
+                    await server_resp.write(icy_title_bytes)
             except (ConnectionResetError, Exception) as e:
                 web_log.debug(f"{type(e).__name__}: {e}")
                 self.unregister_stream_consumer(queue, q)
