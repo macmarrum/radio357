@@ -64,15 +64,15 @@ jak również IP interfejsu sieciowego i port na którym strumień będzie udost
 ### Wymagania systemowe
 
 - [Python](https://www.python.org/downloads/) >= 3.10
-- [aiohttp](https://pypi.org/project/aiohttp/)
-- [aiofiles](https://pypi.org/project/aiofiles/)
-- [tomli-w](https://pypi.org/project/tomli-w/)
+- [aiohttp](https://pypi.org/project/aiohttp/) – przetestowane na wersji 3.10.10
+- [aiofiles](https://pypi.org/project/aiofiles/) – przetestowane na wersji 24.1.0
+- [tomli-w](https://pypi.org/project/tomli-w/) – przetestowane na wersji 1.1.0
 
 #### Opcjonalnie
 
-- [tomli](https://pypi.org/project/tomli/) jeżeli Python jest w wersji 3.10
-- [aiodns](https://pypi.org/project/aiodns/) w przypadku konfiguracji `nameservers`
-- [mpv](https://mpv.io/installation/) do odtwarzania
+- [tomli](https://pypi.org/project/tomli/) jeżeli Python jest w wersji 3.10 – przetestowane na wersji 1.0.0
+- [aiodns](https://pypi.org/project/aiodns/) w przypadku konfiguracji `nameservers` – przetestowane na wersji 3.2.0
+- [mpv](https://mpv.io/installation/) do odtwarzania – przetestowane na wersji 0.39.0
 
 ---
 
