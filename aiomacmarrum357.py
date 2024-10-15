@@ -156,6 +156,7 @@ class c:
     CONTENT_TYPE = 'Content-Type'
     AUDIO_MPEG = 'audio/mpeg'
     APPLICATION_OCTET_STREAM = 'application/octet-stream'
+    ICY_TITLE = 'icy_title'
     ICY_METADATA = 'Icy-MetaData'
     ICY_METAINT = 'icy-metaint'
     HOST = 'host'
@@ -234,6 +235,7 @@ class Macmarrum357():
         self.init_datetime = datetime.now().astimezone()
         self.web_app = web_app
         macmarrum_log.info(f"START Macmarrum357")
+        self.validate_that_consumers_were_requested()
         self.conf = {}
         self.load_config()
         self.is_cookies_changed = False
@@ -249,6 +251,17 @@ class Macmarrum357():
         self.icy_metaint = 0
         self.icy_title_bytes = b''
         self.icy_title_str = ''
+        self.is_distribute_to_consumers_initial_run = True
+
+    @staticmethod
+    def validate_that_consumers_were_requested():
+        for arg in sys.argv:
+            if arg.startswith('--record=') or arg == '--play' or arg.startswith('--play-with='):
+                break
+        else:  # no break
+            message = 'no consumers requested: no --play or --play-with= or --record='
+            macmarrum_log.critical(message)
+            raise ValueError(message)
 
     def register_stream_consumer_to_get_queue(self):
         queue, q = next(self.queue_gen)
@@ -268,6 +281,7 @@ class Macmarrum357():
                 conf = {c.EMAIL: '', c.PASSWORD: '',
                         c.LIVE_STREAM_URL: self.STREAM,
                         # c.LIVE_STREAM_LOCATION_REPLACEMENTS: self.LOCATION_REPLACEMENTS,
+                        c.ICY_TITLE: True,
                         c.PLAYER_ARGS: ['mpv', '--force-window=immediate', '--fs=no']
                         }
                 tomli_w.dump(conf, fo)
@@ -292,7 +306,9 @@ class Macmarrum357():
         run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
         resp = None
         i = 0
-        headers = self.UA_HEADERS | self.AE_HEADERS | {c.ICY_METADATA: '1'}
+        headers = self.UA_HEADERS | self.AE_HEADERS
+        if self.conf.get(c.ICY_TITLE) is True:
+            headers |= {c.ICY_METADATA: '1'}
         while True:
             url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
             try:
@@ -310,7 +326,7 @@ class Macmarrum357():
                     else:
                         resp.raise_for_status()
                         self.content_type = resp.headers.get(c.CONTENT_TYPE, c.APPLICATION_OCTET_STREAM)
-                        self.icy_metaint = int(resp.headers[c.ICY_METAINT])
+                        self.icy_metaint = int(resp.headers.get(c.ICY_METAINT, 0))
                         break
                 macmarrum_log.debug(f"GET => {resp.status} - {dict(resp.headers)}")
                 chunk_num = 0
@@ -378,6 +394,14 @@ class Macmarrum357():
             await self.web_app.cleanup()
 
     async def distribute_to_consumers(self, chunk, chunk_num):
+        if self.is_distribute_to_consumers_initial_run:
+            self.is_distribute_to_consumers_initial_run = False
+            sec = 0.1
+            for attempt in range(1, 6):
+                if self.has_consumers:
+                    break
+                macmarrum_log.debug(f"distribute_to_consumers - initial run - sleep {sec} sec until a consumer comes online - attempt {attempt}")
+                await asyncio.sleep(sec)
         # see aiohttp.streams.StreamReader._read_nowait -> """Read not more than n bytes, or whole buffer if n == -1"""
         # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
         # chunk_num += 1
@@ -396,7 +420,7 @@ class Macmarrum357():
                             macmarrum_log.debug(f"stop: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded")
                             raise
         else:
-            macmarrum_log.info('stop: no consumers')
+            macmarrum_log.info('no consumers')
             raise NoConsumersError()
 
     def mk_connector(self):
@@ -701,7 +725,7 @@ class Macmarrum357():
                 if icy_title_bytes:
                     await server_resp.write(icy_title_bytes)
             except (ConnectionResetError, Exception) as e:
-                web_log.debug(f"{type(e).__name__}: {e}")
+                web_log.debug(f"{type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
                 break
         return server_resp
