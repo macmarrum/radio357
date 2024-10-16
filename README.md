@@ -58,7 +58,7 @@ W tym samym pliku można podać ścieżkę do odtwarzacza używanego przy `--pla
 jak również IP interfejsu sieciowego i port na którym strumień będzie udostępniany lokalnie\
 `host = '0.0.0.0'`\
 `port = 8357`\
-Następująca instrukcja włączy icy-title w strumieniu /live, o ile odtwarzacz wspiera tę funkcję (***mpv** wspiera):\
+Następująca instrukcja włączy icy-title w strumieniu /live, o ile odtwarzacz wspiera tę funkcję (**mpv** wspiera):\
 `icy_title = true`
 
 ***Wskazówka**: `0.0.0.0` oznacza wszystkie interfejsy sieciowe, bez ograniczeń*
