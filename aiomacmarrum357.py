@@ -186,8 +186,7 @@ class Macmarrum357():
     * 2024-09-23,Mon_06.aac - covering 6:00 to 9:00
     * 2024-09-23,Mon_09.aac - covering 9:00 to 12:00
 
-    Record to files changed on the hour since the start until midnight,
-    and spawn `aac-to-m4a` after each change
+    Record to files changed on the hour since the start until midnight, and spawn `aac-to-m4a` after each change
     `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
 
     Note: the values for options `--play=` and `--record=` are in JSON format
@@ -204,6 +203,8 @@ class Macmarrum357():
     as well as IP of the network interface and port where the stream will be served locally
     `host = '0.0.0.0`
     `port = 8357`
+    The following can be set to enable icy-title in the /live stream, if your player supports it (**mpv** does):
+    `icy_title = true`
     """
     STREAM = 'https://stream.radio357.pl/?s=www'
     REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
