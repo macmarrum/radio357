@@ -5,7 +5,7 @@
 Odtwarza i/lub nagrywa Radio 357 na żywo, jako zalogowany użytkownik, z pominięciem komunikatu startowego.
 
 Loguje użytkownika, pobiera ciasteczka i używa ich do odbierania strumienia na żywo.
-Pobierany strumień udostępnia lokalnie przez HTTP dla potrzeb odtwarzania, np. przy użyciu **mpv** lub Windows Media Player.
+Pobierany strumień udostępnia lokalnie przez HTTP dla potrzeb odtwarzania, np. przy użyciu **mpv**, Windows Media Player, itp.
 Opcjonalnie nagrywa strumień do jednego lub kilku plików, zmieniając je o określonych porach.
 
 Odtwarzanie\

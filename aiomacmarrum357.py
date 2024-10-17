@@ -171,7 +171,7 @@ class Macmarrum357():
 
     Logs in, gets cookies and uses them to receive the live stream.
     Makes the stream available locally via http so that it can be played,
-    e.g. with **mpv** or Windows Media Player.
+    e.g. with **mpv**, Windows Media Player, etc.
     Optionally records the stream to one or several files, changing them at specified times.
 
     Play
