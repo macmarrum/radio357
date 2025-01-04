@@ -621,7 +621,7 @@ class Macmarrum357():
             is_to_log_in = not await self.refresh_token(logger)
         if is_to_log_in:
             await self.log_in(logger)
-        self.dump_cookies_if_changed()
+        self.dump_cookies_if_changed(logger)
 
     async def refresh_token(self, logger):
         url = 'https://auth.r357.eu/api/auth/refresh'
@@ -667,8 +667,8 @@ class Macmarrum357():
         self.session.cookie_jar.update_cookies(name_to_cookie[c.REFRESH_TOKEN_EXPIRES], response_url=url)
         self.is_cookies_changed = True
 
-    def dump_cookies_if_changed(self):
-        macmarrum_log.debug(f"dump_cookies_if_changed: {self.is_cookies_changed}")
+    def dump_cookies_if_changed(self, logger: logging.Logger):
+        logger.debug(f"dump_cookies_if_changed: {self.is_cookies_changed}")
         if not self.is_cookies_changed:
             return
         cookie_jar = self.session.cookie_jar
