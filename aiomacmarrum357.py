@@ -540,7 +540,7 @@ class Macmarrum357():
                 recorder_log.info(f"spawn_on_file_end - {' '.join(quote(a) for a in args)}")
                 subprocess.Popen(args)
 
-    async def init_r357_and_set_cookies_changed_if_needed(self, logger=macmarrum_log):
+    async def init_r357_and_set_cookies_changed_if_needed(self, logger: logging.Logger):
         r357_pid = self.get_cookie(c.R357_PID)
         await self.init_r357(logger)
         r357_pid_new = self.get_cookie(c.R357_PID)
@@ -559,7 +559,7 @@ class Macmarrum357():
                     return MacmarrumCookie(name, morsel.value, parse_date(morsel[c.EXPIRES]))
         return MacmarrumCookie(name, '', 0)
 
-    async def init_r357(self, logger=macmarrum_log):
+    async def init_r357(self, logger: logging.Logger):
         url = 'https://checkout.radio357.pl/user/init/'
         headers = self.UA_HEADERS
         logger.debug(f"init_r357 - {url} - {headers}")
@@ -610,7 +610,7 @@ class Macmarrum357():
 
         await refresh_token_in_a_loop()
 
-    async def refresh_token_or_log_in_and_dump_cookies_if_needed(self, logger=macmarrum_log):
+    async def refresh_token_or_log_in_and_dump_cookies_if_needed(self, logger: logging.Logger):
         logger.debug('refresh_token_or_log_in_and_dump_cookies_if_needed')
         # try to refresh the token before falling back to logging in
         is_to_log_in = False
@@ -623,7 +623,7 @@ class Macmarrum357():
             await self.log_in(logger)
         self.dump_cookies_if_changed(logger)
 
-    async def refresh_token(self, logger):
+    async def refresh_token(self, logger: logging.Logger):
         url = 'https://auth.r357.eu/api/auth/refresh'
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
         _json = {c.REFRESHTOKEN: self.get_cookie(c.REFRESH_TOKEN).value}
@@ -636,7 +636,7 @@ class Macmarrum357():
             else:
                 return False
 
-    async def log_in(self, logger):
+    async def log_in(self, logger: logging.Logger):
         url = 'https://auth.r357.eu/api/auth/login'
         credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
@@ -649,7 +649,7 @@ class Macmarrum357():
             else:
                 return False
 
-    async def update_and_persist_tokens_from_resp(self, resp, logger=macmarrum_log):
+    async def update_and_persist_tokens_from_resp(self, resp, logger: logging.Logger):
         d = await resp.json()
         logger.debug(f"update_and_persist_tokens_from_resp - $json")
         expires_int = int((datetime.now().replace(microsecond=0) + self.TOKEN_VALIDITY_DELTA).timestamp())
