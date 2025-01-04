@@ -689,7 +689,8 @@ class Macmarrum357():
                 web_log.debug(f"handle_request_live - queue #{q} - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
             await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
-        if self.icy_metaint and request.headers.get(c.ICY_METADATA) == '1':
+        should_serve_icy_title = self.icy_metaint and request.headers.get(c.ICY_METADATA) == '1'
+        if should_serve_icy_title:
             headers = {c.ICY_METAINT: str(self.icy_metaint)}
         else:
             headers = None
@@ -714,7 +715,7 @@ class Macmarrum357():
                 buffer = b''
             else:
                 chunk = await queue.get()
-            if self.icy_metaint:
+            if should_serve_icy_title:
                 if (count := icy_title_str_to_count.get(self.icy_title_str, 0)) <= 2:
                     icy_title_str_to_count[self.icy_title_str] = count + 1
                     icy_title_bytes = self.icy_title_bytes
@@ -723,7 +724,7 @@ class Macmarrum357():
                     icy_title_bytes = c.ZERO_AS_BYTES
             try:
                 await server_resp.write(chunk)
-                if icy_title_bytes:
+                if should_serve_icy_title:
                     await server_resp.write(icy_title_bytes)
             except (ConnectionResetError, Exception) as e:
                 web_log.debug(f"{type(e).__name__}: {e} - queue #{q}")
