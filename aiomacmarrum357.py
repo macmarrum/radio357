@@ -355,30 +355,37 @@ class Macmarrum357():
                 break
             except Exception as e:
                 i += 1
-                if i > 60:
-                    sec = 3600
-                elif i > 50:
-                    sec = 600
-                elif i > 40:
-                    sec = 300
-                elif i > 30:
-                    sec = 60
-                elif i > 20:
-                    sec = 30
-                elif i > 10:
-                    sec = 5
-                elif i > 5:
-                    sec = 2
-                elif i > 1:
-                    sec = 1
+                if i <= 1:
+                    sec = 0  # 0 sec
+                elif i <= 2:
+                    sec = 1  # 0 + 2*1 = 2 sec since error
+                elif i <= 6:
+                    sec = 2  # 2 + 4*2 = 10 sec since error
+                elif i <= 10:
+                    sec = 5  # 10 + 4*5 = 30 sec since error
+                elif i <= 69:
+                    sec = 30  # 30 + 59*30 = 60 * 30 sec = 30 min since error
+                elif i <= 99:
+                    sec = 60  # 30 min + 30*60 = 60 min since error
+                elif i <= 111:
+                    sec = 300  # 60 min + 12 * 5*60 = 120 min (2h) since error
+                elif i <= 117:
+                    sec = 600  # 120 min + 6 * 10*60 = 180 min (3h) since error
+                elif i <= 120:
+                    sec = 1200  # 180 min + 3 * 20*60 = 240 min (4h) since error
+                elif i <= 124:
+                    sec = 1800  # 240 min + 4 * 30*60 = 600 min (6h) since error
                 else:
-                    sec = 0
-                macmarrum_log.error(f"{type(e).__name__} {e}")
+                    sec = 3600  # after 6h since error, every 1h
+                macmarrum_log.error(f"{type(e).__name__}: {e}")
                 if i == 1 or sec >= 600:
                     macmarrum_log.error(traceback.format_exc())
                 if sec:
                     macmarrum_log.debug(f"sleep {sec} sec before retrying")
                     await asyncio.sleep(sec)
+            else:  # no exception
+                # reset error counter
+                i = 0
         # end while
         if resp and not resp.closed:
             resp.close()
