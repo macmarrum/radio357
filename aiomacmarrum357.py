@@ -94,14 +94,15 @@ LOGGING_CONFIG_DEFAULT = {
 
 
 def configure_logging():
-    if not logging_toml_path.exists():
+    try:
+        with logging_toml_path.open('rb') as fi:
+            dict_config = tomllib.load(fi)
+    except FileNotFoundError:
         with logging_toml_path.open('wb') as fo:
             tomli_w.dump(LOGGING_CONFIG_DEFAULT, fo)
             dict_config = LOGGING_CONFIG_DEFAULT
-    else:
-        with logging_toml_path.open('rb') as fi:
-            dict_config = tomllib.load(fi)
     logging.config.dictConfig(dict_config)
+    macmarrum_log.debug(f"configure_logging: {dict_config}")
 
 
 def mk_filename(start: datetime, end: datetime, duration: timedelta, file_num: int, count: int, suffix: str):
@@ -448,10 +449,11 @@ class Macmarrum357():
         return connector
 
     def mk_timeout(self):
-        macmarrum_log.debug('mk_timeout')
         # https://github.com/aio-libs/aiohttp/issues/3203
         # https://stackoverflow.com/questions/61199544/dealing-with-aiohttp-session-get-timeout-issues-for-large-amout-of-requests
-        return aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
+        macmarrum_log.debug(f"mk_timeout => {timeout}")
+        return timeout
 
     def mk_cookie_jar(self):
         cookie_jar = CookieJar()
@@ -464,26 +466,31 @@ class Macmarrum357():
     async def run_recorder(self, output_dir: str | Path = None, filename: str | Callable | None = None,
                            switch_file_times: SwitchFileTimesType = None,
                            on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None):
-        queue, q = self.register_stream_consumer_to_get_queue()
-        if output_dir is None:
-            output_dir = Path().absolute()
-        if filename is None:
-            filename = mk_filename
-        if switch_file_times is None:
-            switch_file_times = [datetime.now().astimezone().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)]
-        switch_file_datetime = SwitchFileDateTime(switch_file_times)
-        count = switch_file_datetime.count
-        switch_file_datetime_iter = switch_file_datetime.mk_iter()
-        start_output_file_args = (output_dir, filename, switch_file_datetime_iter, count)
-        i = 0
-        while self.content_type is None:
-            if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
-                recorder_log.debug(f"run_recorder - queue #{q} - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
-                break
-            await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
-        suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
-        self.file_path, self.fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
-        self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+        try:
+            queue, q = self.register_stream_consumer_to_get_queue()
+            if output_dir is None:
+                output_dir = Path().absolute()
+            if filename is None:
+                filename = mk_filename
+            if switch_file_times is None:
+                switch_file_times = [datetime.now().astimezone().replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)]
+            switch_file_datetime = SwitchFileDateTime(switch_file_times)
+            count = switch_file_datetime.count
+            switch_file_datetime_iter = switch_file_datetime.mk_iter()
+            start_output_file_args = (output_dir, filename, switch_file_datetime_iter, count)
+            i = 0
+            while self.content_type is None:
+                if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
+                    recorder_log.debug(f"content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec - queue #{q}")
+                    break
+                await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
+            suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
+            self.file_path, self.fo, num, end_dt, duration = await self.start_output_file(*start_output_file_args, suffix)
+            self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+            recorder_log.info(f"{num}/{count} {duration} {self.file_path} - queue #{q}")
+        except Exception as e:
+            recorder_log.critical(f"{type(e).__name__}: {e} - queue #{q}")
+            raise
         try:
             while True:
                 chunk = await queue.get()
@@ -492,18 +499,19 @@ class Macmarrum357():
                     await self.fo.close()
                     self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
                     suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
-                    self.file_path, self.fo, num, end_dt = await self.start_output_file(*start_output_file_args, suffix)
+                    self.file_path, self.fo, num, end_dt, duration = await self.start_output_file(*start_output_file_args, suffix)
                     self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
+                    recorder_log.info(f"{num}/{count} {duration} {self.file_path} - queue #{q}")
         except Exception as e:
             # https://docs.python.org/3/library/exceptions.html#StopIteration
             if isinstance(e, RuntimeError) and isinstance(e.__cause__, StopIteration):
-                recorder_log.debug('exit: end of switch_file_times')
+                recorder_log.debug('exit: end of switch_file_times - queue #{q}')
             else:
-                recorder_log.critical(f"{type(e).__name__}: {e}")
+                recorder_log.critical(f"{type(e).__name__}: {e} - queue #{q}")
         finally:
             self.unregister_stream_consumer(queue, q)
             if not self.fo.closed:
-                recorder_log.debug(f"close self.fo")
+                recorder_log.debug(f"close self.fo - queue #{q}")
                 await self.fo.close()
 
     @classmethod
@@ -525,10 +533,9 @@ class Macmarrum357():
             recorder_log.warning(f"change filename to {new_stem}{output_path.suffix}: file exists {old_path}")
             is_filename_changed = True
         if not is_filename_changed and 'a' in cls.OUTPUT_FILE_MODE and output_path.exists():
-            recorder_log.warning(f"append to an exiting file {output_path}")
-        recorder_log.info(f"RECORD {file_num}/{count} {duration} to {output_path}")
+            recorder_log.warning(f"append to an exiting file - {output_path}")
         fo = await aiofiles.open(output_path, cls.OUTPUT_FILE_MODE)
-        return output_path, fo, file_num, end
+        return output_path, fo, file_num, end, duration
 
     @staticmethod
     def spawn_on_file_start_if_requested(on_file_start, path):
@@ -737,7 +744,7 @@ class Macmarrum357():
                 if should_serve_icy_title:
                     await server_resp.write(icy_title_bytes)
             except (ConnectionResetError, Exception) as e:
-                web_log.debug(f"{type(e).__name__}: {e} - queue #{q}")
+                web_log.debug(f"handle_request_live - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
                 break
         return server_resp
@@ -750,18 +757,19 @@ class Macmarrum357():
                 web_log.debug(f"handle_request_file_then_live - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
             await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
+        web_log.debug(f"handle_request_file_then_live => respond {c.CONTENT_TYPE}: {self.content_type}, {c.TRANSFER_ENCODING}: chunked")
         server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
         is_file_path = self.file_path is not None
         if is_file_path:
-            web_log.debug(f"handle_request_file_then_live - from {self.file_path.name}")
+            web_log.debug(f"handle_request_file_then_live - {self.file_path.name}")
             async with aiofiles.open(self.file_path, 'rb') as fi:
                 while chunk := await fi.read(self.ITER_FILE_CHUNK_SIZE):
                     try:
                         await server_resp.write(chunk)
                     except (ConnectionResetError, Exception) as e:
-                        web_log.debug(f"{type(e).__name__}: {e}")
+                        web_log.debug(f"handle_request - {type(e).__name__}: {e} - {sefl.file_path.name}")
                         return server_resp
         queue, q = self.register_stream_consumer_to_get_queue()
         if not is_file_path:
@@ -776,7 +784,7 @@ class Macmarrum357():
                 i += 1
             web_log.debug(f"handle_request_file_then_live - queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         else:
-            web_log.debug(f"handle_request_file_then_live - from queue #{q}")
+            web_log.debug(f"handle_request_file_then_live - queue #{q}")
         while True:
             if buffer:
                 chunk = buffer
@@ -786,7 +794,7 @@ class Macmarrum357():
             try:
                 await server_resp.write(chunk)
             except (ConnectionResetError, Exception) as e:
-                web_log.debug(f"{type(e).__name__}: {e}")
+                web_log.debug(f"handle_request_file_then_live - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
                 return server_resp
 
