@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # aiomacmarrum357 – an alternative CLI player/recorder for Radio357 patrons
-# Copyright (C) 2024  macmarrum (at) outlook (dot) ie
+# Copyright (C) 2024, 2025  macmarrum (at) outlook (dot) ie
 # SPDX-License-Identifier: GPL-3.0-or-later
 import asyncio
 import email.utils
@@ -128,6 +128,7 @@ class c:
     MACMARRUM357_PORT = 'macmarrum357.port'
     LIVE_STREAM_URL = 'live_stream_url'
     LIVE_STREAM_LOCATION_REPLACEMENTS = 'live_stream_location_replacements'
+    LOG_IN = 'log_in'
     EMAIL = 'email'
     PASSWORD = 'password'
     NAMESERVERS = 'nameservers'
@@ -242,6 +243,7 @@ class Macmarrum357():
         self.validate_that_consumers_were_requested(argv)
         self.conf = {}
         self.load_config()
+        self.should_log_in = self.conf.get(c.LOG_IN, True)
         self.is_cookies_changed = False
         self.is_playing_or_recoding = False
         self.session: aiohttp.ClientSession = None
@@ -282,7 +284,7 @@ class Macmarrum357():
     def load_config(self):
         if not self.config_toml_path.exists():
             with self.config_toml_path.open('wb') as fo:
-                conf = {c.EMAIL: '', c.PASSWORD: '',
+                conf = {c.LOG_IN: False, c.EMAIL: '', c.PASSWORD: '',
                         c.LIVE_STREAM_URL: self.STREAM,
                         # c.LIVE_STREAM_LOCATION_REPLACEMENTS: self.LOCATION_REPLACEMENTS,
                         c.ICY_TITLE: True,
@@ -297,7 +299,7 @@ class Macmarrum357():
                 if k in [c.EMAIL, c.PASSWORD] and v:
                     obfuscated_conf[k] = '*****'
             macmarrum_log.debug(f"load_config - {self.config_toml_path.name} - {obfuscated_conf}")
-        if not conf.get(c.EMAIL) or not conf.get(c.PASSWORD):
+        if conf.get(c.LOG_IN, True) and (not conf.get(c.EMAIL) or not conf.get(c.PASSWORD)):
             macmarrum_log.critical(f"{self.config_toml_path} is missing email and/or password values")
             sys.exit(f"brak email i/lub password w {self.config_toml_path}")
         self.conf = conf
@@ -305,9 +307,10 @@ class Macmarrum357():
     async def run_client(self):
         self.is_playing_or_recoding = True
         self.session = aiohttp.ClientSession(connector=self.mk_connector(), timeout=self.mk_timeout(), cookie_jar=self.mk_cookie_jar())
-        # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
-        await self.refresh_token_or_log_in_and_dump_cookies_if_needed(macmarrum_log)
-        run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
+        if self.should_log_in:
+            # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
+            await self.refresh_token_or_log_in_and_dump_cookies_if_needed(macmarrum_log)
+            run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
         resp = None
         i = 0
         chunk_num = 0
@@ -399,7 +402,8 @@ class Macmarrum357():
             macmarrum_log.debug(f"close self.fo")
             await self.fo.close()
         self.is_playing_or_recoding = False
-        await run_periodic_token_refresh_task
+        if self.should_log_in:
+            await run_periodic_token_refresh_task
         macmarrum_log.info(f"STOP Macmarrum357")
         if self.web_app:
             await self.web_app.shutdown()
