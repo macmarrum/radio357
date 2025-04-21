@@ -150,6 +150,7 @@ class c:
     ACCEPT = 'Accept'
     APPLICATION_JSON = 'application/json'
     ACCEPT_ENCODING = 'Accept-Encoding'
+    TRANSFER_ENCODING = 'Transfer-Encoding'
     IDENTITY = 'identity'
     LOCATION = 'location'
     AUDIO_AAC = 'audio/aac'
@@ -232,11 +233,12 @@ class Macmarrum357():
     _24H_AS_SECONDS = 24 * 60 * 60
     _5M_AS_SECONDS = 5 * 60
 
-    def __init__(self, web_app: web.Application = None):
+    def __init__(self, argv: list[str], web_app: web.Application = None):
         self.init_datetime = datetime.now().astimezone()
+        self.argv = argv
         self.web_app = web_app
         macmarrum_log.info(f"START Macmarrum357")
-        self.validate_that_consumers_were_requested()
+        self.validate_that_consumers_were_requested(argv)
         self.conf = {}
         self.load_config()
         self.is_cookies_changed = False
@@ -255,8 +257,8 @@ class Macmarrum357():
         self.is_distribute_to_consumers_initial_run = True
 
     @staticmethod
-    def validate_that_consumers_were_requested():
-        for arg in sys.argv:
+    def validate_that_consumers_were_requested(argv: list[str]):
+        for arg in argv:
             if arg.startswith('--record=') or arg == '--play' or arg.startswith('--play-with='):
                 break
         else:  # no break
@@ -307,6 +309,7 @@ class Macmarrum357():
         run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
         resp = None
         i = 0
+        chunk_num = 0
         headers = self.UA_HEADERS | self.AE_HEADERS
         if self.conf.get(c.ICY_TITLE) is True:
             headers |= {c.ICY_METADATA: '1'}
@@ -330,7 +333,6 @@ class Macmarrum357():
                         self.icy_metaint = int(resp.headers.get(c.ICY_METAINT, 0))
                         break
                 macmarrum_log.debug(f"GET => {resp.status} - {dict(resp.headers)}")
-                chunk_num = 0
                 buffer = bytearray()
                 min_buffer_size = self.icy_metaint + 1 + 255
                 async for chunk in resp.content.iter_chunked(self.ITER_CHUNKED_UP_TO_SIZE):
@@ -349,6 +351,7 @@ class Macmarrum357():
                             await self.distribute_to_consumers(chunk, chunk_num)
                     else:
                         await self.distribute_to_consumers(chunk, chunk_num)
+                    chunk_num += 1
             except asyncio.queues.QueueFull:
                 break
             except NoConsumersError:
@@ -377,7 +380,7 @@ class Macmarrum357():
                     sec = 1800  # 240 min + 4 * 30*60 = 600 min (6h) since error
                 else:
                     sec = 3600  # after 6h since error, every 1h
-                macmarrum_log.error(f"{type(e).__name__}: {e}")
+                macmarrum_log.error(f"{type(e).__name__}: {e} - chunk {chunk_num}")
                 if i == 1 or sec >= 600:
                     macmarrum_log.error(traceback.format_exc())
                 if sec:
@@ -412,7 +415,6 @@ class Macmarrum357():
                 await asyncio.sleep(sec)
         # see aiohttp.streams.StreamReader._read_nowait -> """Read not more than n bytes, or whole buffer if n == -1"""
         # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
-        # chunk_num += 1
         if self.has_consumers:
             for queue, q in self._consumer_queues:
                 k = 0
@@ -425,9 +427,10 @@ class Macmarrum357():
                             macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
                             await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
                         else:
-                            macmarrum_log.debug(f"stop: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded")
+                            macmarrum_log.debug(f"stop: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - chunk {chunk_num}")
                             raise
         else:
+            macmarrum_log.debug(f"no consumers - chunk {chunk_num}")
             macmarrum_log.info('no consumers')
             raise NoConsumersError()
 
@@ -701,7 +704,7 @@ class Macmarrum357():
             headers = {c.ICY_METAINT: str(self.icy_metaint)}
         else:
             headers = None
-        web_log.debug(f"handle_request_live => {self.content_type} - {headers}")
+        web_log.debug(f"handle_request_live - queue #{q} => respond {c.CONTENT_TYPE}: {self.content_type}, {c.TRANSFER_ENCODING}: chunked, headers: {headers}")
         server_resp = web.Response(content_type=self.content_type, headers=headers)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
@@ -972,8 +975,8 @@ class SwitchFileDateTime:
             yield file_num, start, end, duration
 
 
-def sleep_if_requested():
-    for arg in sys.argv:
+def sleep_if_requested(argv: list[str]):
+    for arg in argv:
         if arg.startswith('--sleep='):
             sec = float(arg.removeprefix('--sleep='))
             macmarrum_log.info(f"sleep {sec:.1f} second(s)")
@@ -987,8 +990,8 @@ class MyPolicy(asyncio.DefaultEventLoopPolicy):
         return asyncio.SelectorEventLoop(selector)
 
 
-def get_recorder_kwargs():
-    for arg in sys.argv:
+def get_recorder_kwargs(argv: list[str]):
+    for arg in argv:
         if arg.startswith('--record='):
             args_as_json = arg.removeprefix('--record=')
             recorder_log.debug(f"{args_as_json=}")
@@ -999,7 +1002,7 @@ def get_recorder_kwargs():
 
 
 def spawn_player_if_requested(macmarrum357, host, port):
-    for arg in sys.argv:
+    for arg in macmarrum357.argv:
         if arg.startswith('--play-with='):
             player = arg.removeprefix('--play-with=')
             player_args = json.loads(player)
@@ -1047,14 +1050,14 @@ def web_log_info_splitlines(message: str):
         web_log.info(line)
 
 
-def main():
+def main(argv: list[str] = sys.argv):
     """Run Macmarrum357 (live-stream client) and a live-stream server app"""
     # https://docs.aiohttp.org/en/stable/web_advanced.html#background-tasks
     configure_logging()
-    sleep_if_requested()
-    recorder_kwargs = get_recorder_kwargs()
+    sleep_if_requested(argv)
+    recorder_kwargs = get_recorder_kwargs(argv)
     live_stream_server_app = web.Application()
-    macmarrum357 = Macmarrum357(live_stream_server_app)
+    macmarrum357 = Macmarrum357(argv, live_stream_server_app)
     live_stream_server_app[c.MACMARRUM357] = macmarrum357
     live_stream_server_app[c.MACMARRUM357_RECORDER_KWARGS] = recorder_kwargs
     live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
