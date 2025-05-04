@@ -10,6 +10,7 @@ import os
 import re
 import selectors
 import shlex
+import signal
 import subprocess
 import sys
 
@@ -30,7 +31,6 @@ import aiohttp
 import tomli_w
 import yarl
 from aiohttp import AsyncResolver, CookieJar, web
-from aiohttp.web_runner import GracefulExit
 
 UTF8 = 'UTF-8'
 
@@ -123,7 +123,6 @@ SwitchFileTimesType = list[StrIntDt] | tuple[StrIntDt]
 
 class c:
     MACMARRUM357 = 'macmarrum357'
-    MACMARRUM357_RECORDER_KWARGS = 'macmarrum357.recorder_kwargs'
     MACMARRUM357_HOST = 'macmarrum357.host'
     MACMARRUM357_PORT = 'macmarrum357.port'
     LIVE_STREAM_URL = 'live_stream_url'
@@ -166,6 +165,7 @@ class c:
     PORT = 'port'
     HANDLER_START_BUFFER_SEC = 'handler_start_buffer_sec'
     ZERO_AS_BYTES = b'\x00'
+    FOREVER = 'forever'
 
 
 class Macmarrum357():
@@ -228,6 +228,8 @@ class Macmarrum357():
     QUEUE_COUNT_LIMIT = sys.maxsize
     QUEUE_FULL_MAX_PUT_ATTEMPTS = 111  # 111 * 0.05 = 5.55 sec
     QUEUE_FULL_SLEEP_SEC = 0.05
+    QUEUE_EMPTY_MAX_GET_ATTEMPTS = 100  # 111 * 0.05 = 5 sec
+    QUEUE_EMPTY_SLEEP_SEC = 0.05
     ITER_FILE_CHUNK_SIZE = 8 * 1024
     ITER_FILE_WAIT_SECS_FOR_DATA = 1
     config_toml_path = macmarrum357_path / 'config.toml'
@@ -238,17 +240,17 @@ class Macmarrum357():
     _24H_AS_SECONDS = 24 * 60 * 60
     _5M_AS_SECONDS = 5 * 60
 
-    def __init__(self, argv: list[str], web_app: web.Application = None):
+    def __init__(self, argv: list[str], recorder_kwargs: dict = None):
         self.init_datetime = datetime.now().astimezone()
         self.argv = argv
-        self.web_app = web_app
+        self.recorder_kwargs = recorder_kwargs
         macmarrum_log.info(f"START Macmarrum357")
         self.validate_that_consumers_were_requested(argv)
         self.conf = {}
         self.load_config()
         self.should_log_in = self.conf.get(c.LOG_IN, True)
         self.is_cookies_changed = False
-        self.is_playing_or_recoding = False
+        self.is_client_running = False
         self.session: aiohttp.ClientSession = None
         self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.LOCATION_REPLACEMENTS)
         self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
@@ -262,6 +264,8 @@ class Macmarrum357():
         self.icy_title_str = ''
         self.is_distribute_to_consumers_initial_run = True
         self.chunk_sizes = []
+        self.is_queue0_registered = False
+        self.forever_qs = {}
 
     @staticmethod
     def validate_that_consumers_were_requested(argv: list[str]):
@@ -273,17 +277,25 @@ class Macmarrum357():
             macmarrum_log.critical(message)
             raise ValueError(message)
 
-    def register_stream_consumer_to_get_queue(self):
+    def register_stream_consumer_to_get_queue(self, forever=False):
         queue, q = next(self.queue_gen)
         self._consumer_queues.append((queue, q))
         self.has_consumers = True
-        macmarrum_log.debug(f"register_stream_consumer => queue #{q}")
+        if q == 0:
+            self.is_queue0_registered = True
+        if forever:
+            self.forever_qs[q] = forever
+        _forever = f" - {c.FOREVER}" if forever else ''
+        macmarrum_log.debug(f"register_stream_consumer => queue #{q}{_forever}")
         return queue, q
 
     def unregister_stream_consumer(self, queue, q):
         macmarrum_log.debug(f"unregister_stream_consumer - queue #{q}")
         self._consumer_queues.remove((queue, q))
         self.has_consumers = len(self._consumer_queues) > 0
+        if q == 0:
+            self.is_queue0_registered = False
+        self.forever_qs.pop(q, None)
 
     def load_config(self):
         if not self.config_toml_path.exists():
@@ -309,7 +321,7 @@ class Macmarrum357():
         self.conf = conf
 
     async def run_client(self):
-        self.is_playing_or_recoding = True
+        self.is_client_running = True
         self.session = aiohttp.ClientSession(connector=self.mk_connector(), timeout=self.mk_timeout(), cookie_jar=self.mk_cookie_jar())
         if self.should_log_in:
             # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
@@ -344,6 +356,8 @@ class Macmarrum357():
                 buffer = bytearray()
                 min_buffer_size = self.icy_metaint + 1 + 255
                 async for chunk in resp.content.iter_chunked(self.ITER_CHUNKED_UP_TO_SIZE):
+                    if not (self.forever_qs or self.is_queue0_registered):
+                        break
                     if self.icy_metaint:
                         buffer += chunk
                         if len(buffer) > min_buffer_size:
@@ -397,18 +411,17 @@ class Macmarrum357():
             else:  # no exception
                 # reset error counter
                 i = 0
+            if not (self.forever_qs or self.is_queue0_registered):
+                break
         # end while
+        macmarrum_log.info('stop client')
         if resp and not resp.closed:
             resp.close()
         if not self.session.closed:
             await self.session.close()
-        if self.fo and not self.fo.closed:
-            macmarrum_log.debug(f"close self.fo")
-            await self.fo.close()
-        self.is_playing_or_recoding = False
+        self.is_client_running = False
         if self.should_log_in:
             await run_periodic_token_refresh_task
-        macmarrum_log.info(f"STOP Macmarrum357")
         if self.chunk_sizes:
             macmarrum_log.debug(f"average chunk size: {sum(self.chunk_sizes) / len(self.chunk_sizes)}")
             chunk_sizes_txt = Path('/tmp/macmarrum357-chunk-sizes.txt')
@@ -417,9 +430,6 @@ class Macmarrum357():
                     fo.write(str(size))
                     fo.write('\n')
             macmarrum_log.debug(f"chunk sizes saved to file: {chunk_sizes_txt}")
-        if self.web_app:
-            await self.web_app.shutdown()
-            await self.web_app.cleanup()
 
     async def distribute_to_consumers(self, chunk, chunk_num):
         # self.chunk_sizes.append(len(chunk))
@@ -523,7 +533,7 @@ class Macmarrum357():
         except Exception as e:
             # https://docs.python.org/3/library/exceptions.html#StopIteration
             if isinstance(e, RuntimeError) and isinstance(e.__cause__, StopIteration):
-                recorder_log.debug('exit: end of switch_file_times - queue #{q}')
+                recorder_log.debug(f"stop recorder: end of switch_file_times - queue #{q}")
             else:
                 recorder_log.critical(f"{type(e).__name__}: {e} - queue #{q}")
         finally:
@@ -613,7 +623,7 @@ class Macmarrum357():
             expires = self.get_cookie(c.TOKEN).expires
             expires_with_margin = expires - self._5M_AS_SECONDS
             while time() < expires_with_margin:
-                if not self.is_playing_or_recoding:
+                if not self.is_client_running:
                     return
                 if self.session.closed:
                     return
@@ -640,7 +650,7 @@ class Macmarrum357():
                     else:
                         token_log.debug(f"query_account => {resp.status}")
                         break
-            if self.is_playing_or_recoding:
+            if self.is_client_running:
                 await refresh_token_in_a_loop()
 
         await refresh_token_in_a_loop()
@@ -716,7 +726,9 @@ class Macmarrum357():
             macmarrum_log.debug(f"dump_cookies_if_changed - unexpected cookie_jar type: {cookie_jar.__class__.__name__}")
 
     async def handle_request_live(self, request: web.Request):
-        queue, q = self.register_stream_consumer_to_get_queue()
+        forever = c.FOREVER in request.query
+        _forever = f" - {c.FOREVER}" if forever else ''
+        queue, q = self.register_stream_consumer_to_get_queue(forever=forever)
         web_log_request(f"handle_request_live - queue #{q}", request)
         i = 0
         while self.content_type is None:
@@ -744,12 +756,28 @@ class Macmarrum357():
             web_log.debug(f"handle_request_live - queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         icy_title_bytes = b''
         icy_title_str_to_count = {}
+        should_end = False
         while True:
             if buffer:
                 chunk = buffer
                 buffer = b''
             else:
-                chunk = await queue.get()
+                # get next chunk from queue
+                k = 0
+                while True:
+                    try:
+                        chunk = queue.get_nowait()
+                        break
+                    except asyncio.QueueEmpty:
+                        if (k := k + 1) <= self.QUEUE_EMPTY_MAX_GET_ATTEMPTS:
+                            await asyncio.sleep(self.QUEUE_EMPTY_SLEEP_SEC)
+                        else:
+                            web_log.debug(f"handle_request_live - queue #{q} - QUEUE_EMPTY_MAX_GET_ATTEMPTS exceeded")
+                            self.unregister_stream_consumer(queue, q)
+                            should_end = True
+                            break
+            if should_end:
+                break
             if should_serve_icy_title:
                 if (count := icy_title_str_to_count.get(self.icy_title_str, 0)) <= 2:
                     icy_title_str_to_count[self.icy_title_str] = count + 1
@@ -765,10 +793,13 @@ class Macmarrum357():
                 web_log.debug(f"handle_request_live - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
                 break
+        web_log.debug(f"handle_request_live - queue #{q}{_forever} - finish")
         return server_resp
 
     async def handle_request_file_then_live(self, request: web.Request):
-        web_log_request('handle_request_file_then_live', request)
+        forever = c.FOREVER in request.query
+        _forever = f" - {c.FOREVER}" if forever else ''
+        web_log_request(f"handle_request_file_then_live{_forever}", request)
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
@@ -787,9 +818,9 @@ class Macmarrum357():
                     try:
                         await server_resp.write(chunk)
                     except (ConnectionResetError, Exception) as e:
-                        web_log.debug(f"handle_request - {type(e).__name__}: {e} - {self.file_path.name}")
+                        web_log.debug(f"handle_request_file_then_live - {type(e).__name__}: {e} - {self.file_path.name}")
                         return server_resp
-        queue, q = self.register_stream_consumer_to_get_queue()
+        queue, q = self.register_stream_consumer_to_get_queue(forever=forever)
         if not is_file_path:
             web_log.warning(f"handle_request_file_then_live - no file - was --record= used?")
         buffer = b''
@@ -802,24 +833,41 @@ class Macmarrum357():
                 i += 1
             web_log.debug(f"handle_request_file_then_live - queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         else:
-            web_log.debug(f"handle_request_file_then_live - queue #{q}")
+            web_log.debug(f"handle_request_file_then_live - queue #{q}{_forever}")
+        should_end = False
         while True:
             if buffer:
                 chunk = buffer
                 buffer = b''
             else:
-                chunk = await queue.get()
+                # get next chunk from queue
+                k = 0
+                while True:
+                    try:
+                        chunk = queue.get_nowait()
+                        break
+                    except asyncio.QueueEmpty:
+                        if (k := k + 1) <= self.QUEUE_EMPTY_MAX_GET_ATTEMPTS:
+                            await asyncio.sleep(self.QUEUE_EMPTY_SLEEP_SEC)
+                        else:
+                            web_log.debug(f"handle_request_file_then_live - queue #{q} - QUEUE_EMPTY_MAX_GET_ATTEMPTS exceeded")
+                            self.unregister_stream_consumer(queue, q)
+                            should_end = True
+                            break
+            if should_end:
+                break
             try:
                 await server_resp.write(chunk)
             except (ConnectionResetError, Exception) as e:
                 web_log.debug(f"handle_request_file_then_live - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
-                return server_resp
+        web_log.debug(f"handle_request_file_then_live - queue #{q}{_forever} - finish")
+        return server_resp
 
 
 def web_log_request(prefix: str, request: web.Request):
     v = request.version
-    web_log.info(f"{prefix} - {request.remote} {request.method} {request.path} HTTP/{v.major}.{v.minor} {request.headers.get(c.USER_AGENT)}")
+    web_log.info(f"{prefix} - {request.remote} {request.method} {request.path_qs} HTTP/{v.major}.{v.minor} {request.headers.get(c.USER_AGENT)}")
 
 
 def mk_simple_cookie(name: str, value: str, expires: str):
@@ -1047,28 +1095,41 @@ def spawn_player_if_requested(macmarrum357, host, port):
         subprocess.Popen(player_args)
 
 
+async def shutdown_app_when_no_consumers(macmarrum357: Macmarrum357):
+    while not macmarrum357.has_consumers:
+        # web_log.debug(f"shutdown_app_when_no_consumers - wait for any consumer to appear")
+        await asyncio.sleep(1)
+    # web_log.debug(f"shutdown_app_when_no_consumers - wait for all consumers to exit")
+    while macmarrum357.has_consumers:
+        await asyncio.sleep(1)
+    web_log.debug(f"shutdown_app_when_no_consumers - send SIGTERM")
+    web_log.info(f"STOP Macmarrum357")
+    # https://github.com/aio-libs/aiohttp/issues/2950
+    # web.run_app -> AppRunner(BaseRunner) reacts on SIGINT, SIGTERM (raising GracefulExit)
+    signal.raise_signal(signal.SIGTERM)
+
+
 async def macmarrum357_cleanup_ctx(app: web.Application):
     """https://docs.aiohttp.org/en/stable/web_advanced.html#aiohttp-web-cleanup-ctx
     a code before yield is an initialization stage (called on startup), a code after yield is executed on cleanup.
     """
-    macmarrum357 = app[c.MACMARRUM357]
+    macmarrum357: Macmarrum357 = app[c.MACMARRUM357]
     live_stream_client_task = asyncio.create_task(macmarrum357.run_client())
-    if recorder_kwargs := app[c.MACMARRUM357_RECORDER_KWARGS]:
+    if recorder_kwargs := macmarrum357.recorder_kwargs:
         live_stream_recorder_task = asyncio.create_task(macmarrum357.run_recorder(**recorder_kwargs))
     host = app[c.MACMARRUM357_HOST]
     port = app[c.MACMARRUM357_PORT]
     spawn_player_if_requested(macmarrum357, host, port)
+    shutdown_task = asyncio.create_task(shutdown_app_when_no_consumers(macmarrum357))
     yield
+    shutdown_task.cancel()
     if recorder_kwargs:
         live_stream_recorder_task.cancel()
     live_stream_client_task.cancel()
+    await shutdown_task
     if recorder_kwargs:
         await live_stream_recorder_task
     await live_stream_client_task
-
-
-def on_web_app_shutdown(app):
-    raise GracefulExit()
 
 
 def web_log_info_splitlines(message: str):
@@ -1083,11 +1144,9 @@ def main(argv: list[str] = sys.argv):
     sleep_if_requested(argv)
     recorder_kwargs = get_recorder_kwargs(argv)
     live_stream_server_app = web.Application()
-    macmarrum357 = Macmarrum357(argv, live_stream_server_app)
+    macmarrum357 = Macmarrum357(argv, recorder_kwargs)
     live_stream_server_app[c.MACMARRUM357] = macmarrum357
-    live_stream_server_app[c.MACMARRUM357_RECORDER_KWARGS] = recorder_kwargs
     live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
-    live_stream_server_app.on_shutdown.append(on_web_app_shutdown)
     live_stream_server_app.add_routes([
         web.get('/live', macmarrum357.handle_request_live),
         web.get('/file-then-live', macmarrum357.handle_request_file_then_live)
