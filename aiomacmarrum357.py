@@ -221,9 +221,12 @@ class Macmarrum357():
     HANDLER_START_BUFFER_SEC = 0
     CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER = 222
     CONSUMER_CONTENT_TYPE_WAIT_SEC = 0.1
-    QUEUE_MAX_LEN = 44
+    # assuming max ITER_CHUNKED_UP_TO_SIZE (4 * 1024) * 2500 = 10_000 kB (10 MB) max queue size in memory
+    # I can see that as of 2025-05-04, 418 is the most common chunk size => 0.418 kB * 2500 = 1045 kB (1 MB)
+    # therefore 10_000 * 418 = 4180 kB (4 MB) - about 4:30 min of streaming
+    QUEUE_MAX_LEN = 10_000
     QUEUE_COUNT_LIMIT = sys.maxsize
-    QUEUE_FULL_MAX_PUT_ATTEMPTS = 111
+    QUEUE_FULL_MAX_PUT_ATTEMPTS = 111  # 111 * 0.05 = 5.55 sec
     QUEUE_FULL_SLEEP_SEC = 0.05
     ITER_FILE_CHUNK_SIZE = 8 * 1024
     ITER_FILE_WAIT_SECS_FOR_DATA = 1
@@ -258,6 +261,7 @@ class Macmarrum357():
         self.icy_title_bytes = b''
         self.icy_title_str = ''
         self.is_distribute_to_consumers_initial_run = True
+        self.chunk_sizes = []
 
     @staticmethod
     def validate_that_consumers_were_requested(argv: list[str]):
@@ -405,11 +409,20 @@ class Macmarrum357():
         if self.should_log_in:
             await run_periodic_token_refresh_task
         macmarrum_log.info(f"STOP Macmarrum357")
+        if self.chunk_sizes:
+            macmarrum_log.debug(f"average chunk size: {sum(self.chunk_sizes) / len(self.chunk_sizes)}")
+            chunk_sizes_txt = Path('/tmp/macmarrum357-chunk-sizes.txt')
+            with chunk_sizes_txt.open('a') as fo:
+                for size in self.chunk_sizes:
+                    fo.write(str(size))
+                    fo.write('\n')
+            macmarrum_log.debug(f"chunk sizes saved to file: {chunk_sizes_txt}")
         if self.web_app:
             await self.web_app.shutdown()
             await self.web_app.cleanup()
 
     async def distribute_to_consumers(self, chunk, chunk_num):
+        # self.chunk_sizes.append(len(chunk))
         if self.is_distribute_to_consumers_initial_run:
             self.is_distribute_to_consumers_initial_run = False
             sec = 0.1
@@ -432,8 +445,9 @@ class Macmarrum357():
                             macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
                             await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
                         else:
-                            macmarrum_log.debug(f"stop: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - chunk {chunk_num}")
-                            raise
+                            macmarrum_log.debug(f"give up: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - chunk {chunk_num}")
+                            self.unregister_stream_consumer(queue, q)
+                            break
         else:
             macmarrum_log.debug(f"no consumers - chunk {chunk_num}")
             macmarrum_log.info('no consumers')
@@ -773,7 +787,7 @@ class Macmarrum357():
                     try:
                         await server_resp.write(chunk)
                     except (ConnectionResetError, Exception) as e:
-                        web_log.debug(f"handle_request - {type(e).__name__}: {e} - {sefl.file_path.name}")
+                        web_log.debug(f"handle_request - {type(e).__name__}: {e} - {self.file_path.name}")
                         return server_resp
         queue, q = self.register_stream_consumer_to_get_queue()
         if not is_file_path:
