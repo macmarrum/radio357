@@ -212,7 +212,7 @@ class Macmarrum357():
     STREAM = 'https://stream.radio357.pl/?s=www'
     REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
     LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
-    USER_AGENT = 'macmarrum/357'
+    USER_AGENT = f"macmarrum/357 {aiohttp.http.SERVER_SOFTWARE}"
     UA_HEADERS = {c.USER_AGENT: USER_AGENT}
     AE_HEADERS = {c.ACCEPT: f"{c.AUDIO_AAC},{c.AUDIO_MPEG}", c.ACCEPT_ENCODING: c.IDENTITY}
     ACCEPT_JSON_HEADERS = {c.ACCEPT: c.APPLICATION_JSON}
