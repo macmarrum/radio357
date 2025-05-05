@@ -222,8 +222,8 @@ class Macmarrum357():
     CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER = 222
     CONSUMER_CONTENT_TYPE_WAIT_SEC = 0.1
     # assuming max ITER_CHUNKED_UP_TO_SIZE (4 * 1024) * 2500 = 10_000 kB (10 MB) max queue size in memory
-    # I can see that as of 2025-05-04, 418 is the most common chunk size => 0.418 kB * 2500 = 1045 kB (1 MB)
-    # therefore 10_000 * 418 = 4180 kB (4 MB) - about 4:30 min of streaming
+    # in the mp3 stream, 418 is the most common chunk size => 0.418 kB * 10_000 = 4180 kB (4 MB)
+    # in the aac stream, ~1 kB * 10_000 = ~10 MB
     QUEUE_MAX_LEN = 10_000
     QUEUE_COUNT_LIMIT = sys.maxsize
     QUEUE_FULL_MAX_PUT_ATTEMPTS = 111  # 111 * 0.05 = 5.55 sec
@@ -263,7 +263,7 @@ class Macmarrum357():
         self.icy_title_bytes = b''
         self.icy_title_str = ''
         self.is_distribute_to_consumers_initial_run = True
-        self.chunk_sizes = []
+        self.chunk_sizes_queue = None  # asyncio.Queue()
         self.is_queue0_registered = False
         self.forever_qs = {}
 
@@ -422,17 +422,10 @@ class Macmarrum357():
         self.is_client_running = False
         if self.should_log_in:
             await run_periodic_token_refresh_task
-        if self.chunk_sizes:
-            macmarrum_log.debug(f"average chunk size: {sum(self.chunk_sizes) / len(self.chunk_sizes)}")
-            chunk_sizes_txt = Path('/tmp/macmarrum357-chunk-sizes.txt')
-            with chunk_sizes_txt.open('a') as fo:
-                for size in self.chunk_sizes:
-                    fo.write(str(size))
-                    fo.write('\n')
-            macmarrum_log.debug(f"chunk sizes saved to file: {chunk_sizes_txt}")
 
     async def distribute_to_consumers(self, chunk, chunk_num):
-        # self.chunk_sizes.append(len(chunk))
+        if self.chunk_sizes_queue is not None:
+            self.chunk_sizes_queue.put_nowait(len(chunk))
         if self.is_distribute_to_consumers_initial_run:
             self.is_distribute_to_consumers_initial_run = False
             sec = 0.1
@@ -1095,6 +1088,16 @@ def spawn_player_if_requested(macmarrum357, host, port):
         subprocess.Popen(player_args)
 
 
+async def write_chunk_sizes_to_file(macmarrum357: Macmarrum357):
+    if macmarrum357.chunk_sizes_queue is None:
+        return
+    chunk_sizes_txt = Path('/tmp/macmarrum357-chunk-sizes.txt')
+    async with aiofiles.open(chunk_sizes_txt, 'a', encoding='L1') as fo:
+        while macmarrum357.is_client_running:
+            chunk_size = await macmarrum357.chunk_sizes_queue.get()
+            await fo.write(f"{chunk_size}\n")
+
+
 async def shutdown_app_when_no_consumers(macmarrum357: Macmarrum357):
     while not macmarrum357.has_consumers:
         # web_log.debug(f"shutdown_app_when_no_consumers - wait for any consumer to appear")
@@ -1121,11 +1124,14 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     port = app[c.MACMARRUM357_PORT]
     spawn_player_if_requested(macmarrum357, host, port)
     shutdown_task = asyncio.create_task(shutdown_app_when_no_consumers(macmarrum357))
+    chunk_sizes_task = asyncio.create_task(write_chunk_sizes_to_file(macmarrum357))
     yield
+    chunk_sizes_task.cancel()
     shutdown_task.cancel()
     if recorder_kwargs:
         live_stream_recorder_task.cancel()
     live_stream_client_task.cancel()
+    await chunk_sizes_task
     await shutdown_task
     if recorder_kwargs:
         await live_stream_recorder_task
