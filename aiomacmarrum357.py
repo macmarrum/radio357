@@ -221,14 +221,14 @@ class Macmarrum357():
     HANDLER_START_BUFFER_SEC = 0
     CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER = 222
     CONSUMER_CONTENT_TYPE_WAIT_SEC = 0.1
-    # assuming max ITER_CHUNKED_UP_TO_SIZE (4 * 1024) * 2500 = 10_000 kB (10 MB) max queue size in memory
+    # with icy_title enabled I can see icy_metaint: 16000 => 16 kB * 10_000 = 160 MB max queue size
     # in the mp3 stream, 418 is the most common chunk size => 0.418 kB * 10_000 = 4180 kB (4 MB)
     # in the aac stream, ~1 kB * 10_000 = ~10 MB
     QUEUE_MAX_LEN = 10_000
     QUEUE_COUNT_LIMIT = sys.maxsize
     QUEUE_FULL_MAX_PUT_ATTEMPTS = 111  # 111 * 0.05 = 5.55 sec
     QUEUE_FULL_SLEEP_SEC = 0.05
-    QUEUE_EMPTY_MAX_GET_ATTEMPTS = 100  # 111 * 0.05 = 5 sec
+    QUEUE_EMPTY_MAX_GET_ATTEMPTS = 100  # 5 sec
     QUEUE_EMPTY_SLEEP_SEC = 0.05
     ITER_FILE_CHUNK_SIZE = 8 * 1024
     ITER_FILE_WAIT_SECS_FOR_DATA = 1
