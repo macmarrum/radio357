@@ -228,8 +228,7 @@ class Macmarrum357():
     QUEUE_COUNT_LIMIT = sys.maxsize
     QUEUE_FULL_MAX_PUT_ATTEMPTS = 111  # 111 * 0.05 = 5.55 sec
     QUEUE_FULL_SLEEP_SEC = 0.05
-    QUEUE_EMPTY_MAX_GET_ATTEMPTS = 100  # 5 sec
-    QUEUE_EMPTY_SLEEP_SEC = 0.05
+    QUEUE_EMPTY_TIMEOUT_SEC = 5.0
     ITER_FILE_CHUNK_SIZE = 8 * 1024
     ITER_FILE_WAIT_SECS_FOR_DATA = 1
     config_toml_path = macmarrum357_path / 'config.toml'
@@ -255,7 +254,7 @@ class Macmarrum357():
         self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.LOCATION_REPLACEMENTS)
         self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
         self._consumer_queues: list[tuple[asyncio.Queue, int]] = []
-        self.has_consumers = False
+        self.consumers_length = 0
         self.fo = None
         self.file_path: Path = None
         self.content_type = None
@@ -280,7 +279,7 @@ class Macmarrum357():
     def register_stream_consumer_to_get_queue(self, forever=False):
         queue, q = next(self.queue_gen)
         self._consumer_queues.append((queue, q))
-        self.has_consumers = True
+        self.consumers_length += 1
         if q == 0:
             self.is_queue0_registered = True
         if forever:
@@ -292,7 +291,7 @@ class Macmarrum357():
     def unregister_stream_consumer(self, queue, q):
         macmarrum_log.debug(f"unregister_stream_consumer - queue #{q}")
         self._consumer_queues.remove((queue, q))
-        self.has_consumers = len(self._consumer_queues) > 0
+        self.consumers_length -= 1
         if q == 0:
             self.is_queue0_registered = False
         self.forever_qs.pop(q, None)
@@ -355,6 +354,7 @@ class Macmarrum357():
                 macmarrum_log.debug(f"GET => {resp.status} - {dict(resp.headers)}")
                 buffer = bytearray()
                 min_buffer_size = self.icy_metaint + 1 + 255
+                # see aiohttp.streams.StreamReader._read_nowait -> """Read not more than n bytes, or whole buffer if n == -1"""
                 async for chunk in resp.content.iter_chunked(self.ITER_CHUNKED_UP_TO_SIZE):
                     if not (self.forever_qs or self.is_queue0_registered):
                         break
@@ -430,31 +430,42 @@ class Macmarrum357():
             self.is_distribute_to_consumers_initial_run = False
             sec = 0.1
             for attempt in range(1, 6):
-                if self.has_consumers:
+                if self.consumers_length:
                     break
                 macmarrum_log.debug(f"distribute_to_consumers - initial run - sleep {sec} sec until a consumer comes online - attempt {attempt}")
                 await asyncio.sleep(sec)
-        # see aiohttp.streams.StreamReader._read_nowait -> """Read not more than n bytes, or whole buffer if n == -1"""
-        # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
-        if self.has_consumers:
+        if self.consumers_length:
+            distribution_tasks = set()
             for queue, q in self._consumer_queues:
-                k = 0
-                while True:
-                    try:
-                        queue.put_nowait(chunk)
-                        break
-                    except asyncio.queues.QueueFull as e:
-                        if (k := k + 1) <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
-                            macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
-                            await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
-                        else:
-                            macmarrum_log.debug(f"give up: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - chunk {chunk_num}")
-                            self.unregister_stream_consumer(queue, q)
-                            break
+                if self.consumers_length == 1:
+                    # single consumer - avoid creating task
+                    await self._distribute_to_consumer(chunk, chunk_num, queue, q)
+                else:
+                    # create_task to not block other queues, in case queue must wait because of QueueFull
+                    # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
+                    task = asyncio.create_task(self._distribute_to_consumer(chunk, chunk_num, queue, q))
+                    distribution_tasks.add(task)
+                    task.add_done_callback(distribution_tasks.discard)
         else:
             macmarrum_log.debug(f"no consumers - chunk {chunk_num}")
             macmarrum_log.info('no consumers')
             raise NoConsumersError()
+
+    async def _distribute_to_consumer(self, chunk: bytes, chunk_num: int, queue: asyncio.Queue, q: int):
+        # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
+        k = 0
+        while True:
+            try:
+                queue.put_nowait(chunk)
+                break
+            except asyncio.queues.QueueFull as e:
+                if (k := k + 1) <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
+                    macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
+                    await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
+                else:
+                    macmarrum_log.debug(f"give up: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - chunk {chunk_num}")
+                    self.unregister_stream_consumer(queue, q)
+                    break
 
     def mk_connector(self):
         # https://github.com/netblue30/fdns/issues/47
@@ -502,7 +513,7 @@ class Macmarrum357():
             i = 0
             while self.content_type is None:
                 if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
-                    recorder_log.debug(f"content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec - queue #{q}")
+                    recorder_log.debug(f"content_type still None - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec - queue #{q}")
                     break
                 await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
             suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
@@ -726,7 +737,7 @@ class Macmarrum357():
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
-                web_log.debug(f"handle_request_live - queue #{q} - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
+                web_log.debug(f"handle_request_live - queue #{q} - content_type still None - after {self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
             await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
         should_serve_icy_title = self.icy_metaint and request.headers.get(c.ICY_METADATA) == '1'
@@ -749,29 +760,20 @@ class Macmarrum357():
             web_log.debug(f"handle_request_live - queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         icy_title_bytes = b''
         icy_title_str_to_count = {}
-        should_end = False
         while True:
             if buffer:
                 chunk = buffer
                 buffer = b''
             else:
-                # get next chunk from queue
-                k = 0
-                while True:
-                    try:
-                        chunk = queue.get_nowait()
-                        break
-                    except asyncio.QueueEmpty:
-                        if (k := k + 1) <= self.QUEUE_EMPTY_MAX_GET_ATTEMPTS:
-                            await asyncio.sleep(self.QUEUE_EMPTY_SLEEP_SEC)
-                        else:
-                            web_log.debug(f"handle_request_live - queue #{q} - QUEUE_EMPTY_MAX_GET_ATTEMPTS exceeded")
-                            self.unregister_stream_consumer(queue, q)
-                            should_end = True
-                            break
-            if should_end:
-                break
+                # get next chunk from queue, with timeout
+                try:
+                    chunk = await asyncio.wait_for(queue.get(),  self.QUEUE_EMPTY_TIMEOUT_SEC)
+                except asyncio.TimeoutError:
+                    web_log.debug(f"handle_request_live - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
+                    self.unregister_stream_consumer(queue, q)
+                    break
             if should_serve_icy_title:
+                # serve icy-title twice
                 if (count := icy_title_str_to_count.get(self.icy_title_str, 0)) <= 2:
                     icy_title_str_to_count[self.icy_title_str] = count + 1
                     icy_title_bytes = self.icy_title_bytes
@@ -796,7 +798,7 @@ class Macmarrum357():
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
-                web_log.debug(f"handle_request_file_then_live - content_type {self.content_type} - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
+                web_log.debug(f"handle_request_file_then_live - content_type still None - after {self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
             await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
         web_log.debug(f"handle_request_file_then_live => respond {c.CONTENT_TYPE}: {self.content_type}, {c.TRANSFER_ENCODING}: chunked")
@@ -827,28 +829,18 @@ class Macmarrum357():
             web_log.debug(f"handle_request_file_then_live - queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         else:
             web_log.debug(f"handle_request_file_then_live - queue #{q}{_forever}")
-        should_end = False
         while True:
             if buffer:
                 chunk = buffer
                 buffer = b''
             else:
-                # get next chunk from queue
-                k = 0
-                while True:
-                    try:
-                        chunk = queue.get_nowait()
-                        break
-                    except asyncio.QueueEmpty:
-                        if (k := k + 1) <= self.QUEUE_EMPTY_MAX_GET_ATTEMPTS:
-                            await asyncio.sleep(self.QUEUE_EMPTY_SLEEP_SEC)
-                        else:
-                            web_log.debug(f"handle_request_file_then_live - queue #{q} - QUEUE_EMPTY_MAX_GET_ATTEMPTS exceeded")
-                            self.unregister_stream_consumer(queue, q)
-                            should_end = True
-                            break
-            if should_end:
-                break
+                # get next chunk from queue, with timeout
+                try:
+                    chunk = await asyncio.wait_for(queue.get(),  self.QUEUE_EMPTY_TIMEOUT_SEC)
+                except asyncio.TimeoutError:
+                    web_log.debug(f"handle_request_file_then_live - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
+                    self.unregister_stream_consumer(queue, q)
+                    break
             try:
                 await server_resp.write(chunk)
             except (ConnectionResetError, Exception) as e:
@@ -1099,11 +1091,11 @@ async def write_chunk_sizes_to_file(macmarrum357: Macmarrum357):
 
 
 async def shutdown_app_when_no_consumers(macmarrum357: Macmarrum357):
-    while not macmarrum357.has_consumers:
+    while not macmarrum357.consumers_length:
         # web_log.debug(f"shutdown_app_when_no_consumers - wait for any consumer to appear")
         await asyncio.sleep(1)
     # web_log.debug(f"shutdown_app_when_no_consumers - wait for all consumers to exit")
-    while macmarrum357.has_consumers:
+    while macmarrum357.consumers_length:
         await asyncio.sleep(1)
     web_log.debug(f"shutdown_app_when_no_consumers - send SIGTERM")
     web_log.info(f"STOP Macmarrum357")
