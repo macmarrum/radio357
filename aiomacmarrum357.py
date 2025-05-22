@@ -113,7 +113,7 @@ def quote(x):
     return shlex.quote(x)
 
 
-class NoConsumersError(RuntimeError):
+class NoConsumers(RuntimeError):
     pass
 
 
@@ -262,7 +262,7 @@ class Macmarrum357():
         self.icy_title_bytes = b''
         self.icy_title_str = ''
         self.is_distribute_to_consumers_initial_run = True
-        self.chunk_sizes_queue = None  # asyncio.Queue()
+        self.chunk_sizes_queue = None  # change it to asyncio.Queue() to enable write_chunk_sizes_to_file for analysis
         self.is_queue0_registered = False
         self.forever_qs = {}
 
@@ -376,7 +376,7 @@ class Macmarrum357():
                     chunk_num += 1
             except asyncio.queues.QueueFull:
                 break
-            except NoConsumersError:
+            except NoConsumers:
                 break
             except Exception as e:
                 i += 1
@@ -449,7 +449,7 @@ class Macmarrum357():
         else:
             macmarrum_log.debug(f"no consumers - chunk {chunk_num}")
             macmarrum_log.info('no consumers')
-            raise NoConsumersError()
+            raise NoConsumers()
 
     async def _distribute_to_consumer(self, chunk: bytes, chunk_num: int, queue: asyncio.Queue, q: int):
         # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
