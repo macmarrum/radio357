@@ -166,6 +166,8 @@ class c:
     HANDLER_START_BUFFER_SEC = 'handler_start_buffer_sec'
     ZERO_AS_BYTES = b'\x00'
     FOREVER = 'forever'
+    RECORD_ = '--record='
+    PLAY_WITH_ = '--play-with='
 
 
 class Macmarrum357():
@@ -211,7 +213,7 @@ class Macmarrum357():
     """
     STREAM = 'https://stream.radio357.pl/?s=www'
     REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
-    LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
+    DEFAULT_LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
     USER_AGENT = f"macmarrum/357 {aiohttp.http.SERVER_SOFTWARE}"
     UA_HEADERS = {c.USER_AGENT: USER_AGENT}
     AE_HEADERS = {c.ACCEPT: f"{c.AUDIO_AAC},{c.AUDIO_MPEG}", c.ACCEPT_ENCODING: c.IDENTITY}
@@ -243,7 +245,7 @@ class Macmarrum357():
         self.init_datetime = datetime.now().astimezone()
         self.argv = argv
         self.recorder_kwargs = recorder_kwargs
-        macmarrum_log.info(f"START Macmarrum357")
+        macmarrum_log.info('START Macmarrum357')
         self.validate_that_consumers_were_requested(argv)
         self.conf = {}
         self.load_config()
@@ -251,7 +253,7 @@ class Macmarrum357():
         self.is_cookies_changed = False
         self.is_client_running = False
         self.session: aiohttp.ClientSession = None
-        self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.LOCATION_REPLACEMENTS)
+        self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.DEFAULT_LOCATION_REPLACEMENTS)
         self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
         self._consumer_queues: list[tuple[asyncio.Queue, int]] = []
         self.consumers_length = 0
@@ -269,7 +271,7 @@ class Macmarrum357():
     @staticmethod
     def validate_that_consumers_were_requested(argv: list[str]):
         for arg in argv:
-            if arg.startswith('--record=') or arg == '--play' or arg.startswith('--play-with='):
+            if arg.startswith(c.RECORD_) or arg == '--play' or arg.startswith(c.PLAY_WITH_):
                 break
         else:  # no break
             message = 'no consumers requested: no --play or --play-with= or --record='
@@ -618,7 +620,7 @@ class Macmarrum357():
             assert self.get_cookie(c.R357_PID).value, f"{c.R357_PID} is missing. This is unexpected."
 
     async def run_periodic_token_refresh(self):
-        token_log.info(f"run_periodic_token_refresh")
+        token_log.info('run_periodic_token_refresh')
 
         async def refresh_token_in_a_loop():
             token_log.debug('refresh_token_in_a_loop - sleep until it\'s time')
@@ -700,7 +702,7 @@ class Macmarrum357():
 
     async def update_and_persist_tokens_from_resp(self, resp, logger: logging.Logger):
         d = await resp.json()
-        logger.debug(f"update_and_persist_tokens_from_resp - $json")
+        logger.debug('update_and_persist_tokens_from_resp - $json')
         expires_int = int((datetime.now().replace(microsecond=0) + self.TOKEN_VALIDITY_DELTA).timestamp())
         expires_str = email.utils.formatdate(expires_int, usegmt=True)
         name_to_cookie = {
@@ -767,7 +769,7 @@ class Macmarrum357():
             else:
                 # get next chunk from queue, with timeout
                 try:
-                    chunk = await asyncio.wait_for(queue.get(),  self.QUEUE_EMPTY_TIMEOUT_SEC)
+                    chunk = await asyncio.wait_for(queue.get(), self.QUEUE_EMPTY_TIMEOUT_SEC)
                 except asyncio.TimeoutError:
                     web_log.debug(f"handle_request_live - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
                     self.unregister_stream_consumer(queue, q)
@@ -784,7 +786,7 @@ class Macmarrum357():
                 await server_resp.write(chunk)
                 if should_serve_icy_title:
                     await server_resp.write(icy_title_bytes)
-            except (ConnectionResetError, Exception) as e:
+            except Exception as e:  # incl. ConnectionResetError
                 web_log.debug(f"handle_request_live - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
                 break
@@ -812,12 +814,12 @@ class Macmarrum357():
                 while chunk := await fi.read(self.ITER_FILE_CHUNK_SIZE):
                     try:
                         await server_resp.write(chunk)
-                    except (ConnectionResetError, Exception) as e:
+                    except Exception as e:  # incl. ConnectionResetError
                         web_log.debug(f"handle_request_file_then_live - {type(e).__name__}: {e} - {self.file_path.name}")
                         return server_resp
         queue, q = self.register_stream_consumer_to_get_queue(forever=forever)
         if not is_file_path:
-            web_log.warning(f"handle_request_file_then_live - no file - was --record= used?")
+            web_log.warning('handle_request_file_then_live - no file - was --record= used?')
         buffer = b''
         handler_start_buffer_sec = self.conf.get(c.HANDLER_START_BUFFER_SEC, self.HANDLER_START_BUFFER_SEC)
         if not is_file_path and handler_start_buffer_sec:
@@ -836,14 +838,14 @@ class Macmarrum357():
             else:
                 # get next chunk from queue, with timeout
                 try:
-                    chunk = await asyncio.wait_for(queue.get(),  self.QUEUE_EMPTY_TIMEOUT_SEC)
+                    chunk = await asyncio.wait_for(queue.get(), self.QUEUE_EMPTY_TIMEOUT_SEC)
                 except asyncio.TimeoutError:
                     web_log.debug(f"handle_request_file_then_live - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
                     self.unregister_stream_consumer(queue, q)
                     break
             try:
                 await server_resp.write(chunk)
-            except (ConnectionResetError, Exception) as e:
+            except Exception as e:  # incl. ConnectionResetError
                 web_log.debug(f"handle_request_file_then_live - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
         web_log.debug(f"handle_request_file_then_live - queue #{q}{_forever} - finish")
@@ -983,7 +985,7 @@ class SwitchFileDateTime:
 
     def _mk_iterator_for_datetime_args(self, _now: datetime = None, _debug=False) -> SwitchFileIterator:
         # for testing, _now can be set to specific time
-        start = end = _now or datetime.now().astimezone()
+        end = _now or datetime.now().astimezone()
         for file_num, dt in enumerate(self._switch_file_times, start=1):
             # new start is previous end, and real time for debugging
             start = end if not _debug else datetime.now().astimezone()
@@ -994,7 +996,7 @@ class SwitchFileDateTime:
 
     def _mk_iterator_for_regular_args(self, _now: datetime = None, _debug=False) -> SwitchFileIterator:
         # for testing, _now can be set to specific time
-        start = end = _now or datetime.now().astimezone()
+        end = _now or datetime.now().astimezone()
         file_num = 0
         h_m_s: tuple[int | None, int, int]
         for i, h_m_s in enumerate(self.parsed_switch_file_times):
@@ -1012,7 +1014,7 @@ class SwitchFileDateTime:
     def _mk_iterator_for_asterisk_arg0(self, _now: datetime = None, _debug=False) -> SwitchFileIterator:
         # for testing, _now can be set to specific time
         start = _now or datetime.now().astimezone()
-        h, m, s = self.parsed_switch_file_times[0]
+        _, m, s = self.parsed_switch_file_times[0]
         final_h, final_m, final_s = self.parsed_switch_file_times[1]
         final_end = start.replace(hour=final_h, minute=final_m, second=final_s, microsecond=0)
         if final_end < start:
@@ -1051,8 +1053,8 @@ class MyPolicy(asyncio.DefaultEventLoopPolicy):
 
 def get_recorder_kwargs(argv: list[str]):
     for arg in argv:
-        if arg.startswith('--record='):
-            args_as_json = arg.removeprefix('--record=')
+        if arg.startswith(c.RECORD_):
+            args_as_json = arg.removeprefix(c.RECORD_)
             recorder_log.debug(f"{args_as_json=}")
             record_args = json.loads(args_as_json)
             recorder_log.debug(f"{record_args=}")
@@ -1062,8 +1064,8 @@ def get_recorder_kwargs(argv: list[str]):
 
 def spawn_player_if_requested(macmarrum357, host, port):
     for arg in macmarrum357.argv:
-        if arg.startswith('--play-with='):
-            player = arg.removeprefix('--play-with=')
+        if arg.startswith(c.PLAY_WITH_):
+            player = arg.removeprefix(c.PLAY_WITH_)
             player_args = json.loads(player)
             if not isinstance(player_args, list):
                 player_args = [player_args]
@@ -1097,8 +1099,8 @@ async def shutdown_app_when_no_consumers(macmarrum357: Macmarrum357):
     # web_log.debug(f"shutdown_app_when_no_consumers - wait for all consumers to exit")
     while macmarrum357.consumers_length:
         await asyncio.sleep(1)
-    web_log.debug(f"shutdown_app_when_no_consumers - send SIGTERM")
-    web_log.info(f"STOP Macmarrum357")
+    web_log.debug('shutdown_app_when_no_consumers - send SIGTERM')
+    web_log.info('STOP Macmarrum357')
     # https://github.com/aio-libs/aiohttp/issues/2950
     # web.run_app -> AppRunner(BaseRunner) reacts on SIGINT, SIGTERM (raising GracefulExit)
     signal.raise_signal(signal.SIGTERM)
@@ -1135,9 +1137,11 @@ def web_log_info_splitlines(message: str):
         web_log.info(line)
 
 
-def main(argv: list[str] = sys.argv):
+def main(argv: list[str] = None):
     """Run Macmarrum357 (live-stream client) and a live-stream server app"""
     # https://docs.aiohttp.org/en/stable/web_advanced.html#background-tasks
+    if argv is None:
+        argv = sys.argv
     configure_logging()
     sleep_if_requested(argv)
     recorder_kwargs = get_recorder_kwargs(argv)
