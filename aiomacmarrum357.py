@@ -482,7 +482,8 @@ class Macmarrum357():
         macmarrum_log.debug(f"mk_connector - use nameservers {nameservers}")
         return connector
 
-    def mk_timeout(self):
+    @staticmethod
+    def mk_timeout():
         # https://github.com/aio-libs/aiohttp/issues/3203
         # https://stackoverflow.com/questions/61199544/dealing-with-aiohttp-session-get-timeout-issues-for-large-amout-of-requests
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
