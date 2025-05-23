@@ -435,7 +435,7 @@ class Macmarrum357():
                 try:
                     queue.put_nowait(chunk)
                 except asyncio.QueueFull:
-                    macmarrum_log.warning(f"queue #{q} - QueueFull - chunk {chunk_num}")
+                    macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - QueueFull - chunk {chunk_num}")
                     self.unregister_stream_consumer(queue, q)
         else:
             macmarrum_log.debug(f"no consumers - chunk {chunk_num}")
