@@ -228,7 +228,7 @@ class Macmarrum357():
     # in the aac stream, ~1 kB * 10_000 = ~10 MB
     QUEUE_MAX_LEN = 10_000
     QUEUE_COUNT_LIMIT = sys.maxsize
-    QUEUE_FULL_MAX_PUT_ATTEMPTS = 111  # 111 * 0.05 = 5.55 sec
+    QUEUE_FULL_MAX_PUT_ATTEMPTS = 1
     QUEUE_FULL_SLEEP_SEC = 0.05
     QUEUE_EMPTY_TIMEOUT_SEC = 5.0
     ITER_FILE_CHUNK_SIZE = 8 * 1024
