@@ -376,8 +376,6 @@ class Macmarrum357():
                     else:
                         await self.distribute_to_consumers(chunk, chunk_num)
                     chunk_num += 1
-            except asyncio.queues.QueueFull:
-                break
             except NoConsumers:
                 break
             except Exception as e:
