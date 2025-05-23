@@ -228,8 +228,6 @@ class Macmarrum357():
     # in the aac stream, ~1 kB * 10_000 = ~10 MB
     QUEUE_MAX_LEN = 10_000
     QUEUE_COUNT_LIMIT = sys.maxsize
-    QUEUE_FULL_MAX_PUT_ATTEMPTS = 1
-    QUEUE_FULL_SLEEP_SEC = 0.05
     QUEUE_EMPTY_TIMEOUT_SEC = 5.0
     ITER_FILE_CHUNK_SIZE = 8 * 1024
     ITER_FILE_WAIT_SECS_FOR_DATA = 1
@@ -433,37 +431,16 @@ class Macmarrum357():
                 macmarrum_log.debug(f"distribute_to_consumers - initial run - sleep {sec} sec until a consumer comes online - attempt {attempt}")
                 await asyncio.sleep(sec)
         if self.consumers_length:
-            distribution_tasks = set()
             for queue, q in self._consumer_queues:
-                if self.consumers_length == 1:
-                    # single consumer - avoid creating task
-                    await self._distribute_to_consumer(chunk, chunk_num, queue, q)
-                else:
-                    # create_task to not block other queues, in case queue must wait because of QueueFull
-                    # https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task
-                    task = asyncio.create_task(self._distribute_to_consumer(chunk, chunk_num, queue, q))
-                    distribution_tasks.add(task)
-                    task.add_done_callback(distribution_tasks.discard)
+                try:
+                    queue.put_nowait(chunk)
+                except asyncio.QueueFull:
+                    macmarrum_log.warning(f"queue #{q} - QueueFull - chunk {chunk_num}")
+                    self.unregister_stream_consumer(queue, q)
         else:
             macmarrum_log.debug(f"no consumers - chunk {chunk_num}")
             macmarrum_log.info('no consumers')
             raise NoConsumers()
-
-    async def _distribute_to_consumer(self, chunk: bytes, chunk_num: int, queue: asyncio.Queue, q: int):
-        # Note: chunk_num and queue.put_nowait instead of await queue.put are there so that I can observe Queue fill-up and establish a reasonable Queue size
-        k = 0
-        while True:
-            try:
-                queue.put_nowait(chunk)
-                break
-            except asyncio.queues.QueueFull as e:
-                if (k := k + 1) <= self.QUEUE_FULL_MAX_PUT_ATTEMPTS:
-                    macmarrum_log.debug(f"sleep {self.QUEUE_FULL_SLEEP_SEC} sec - queue #{q} - {type(e).__name__} - chunk {chunk_num} put attempt {k}")
-                    await asyncio.sleep(self.QUEUE_FULL_SLEEP_SEC)
-                else:
-                    macmarrum_log.debug(f"give up: queue #{q} - {type(e).__name__} - QUEUE_FULL_MAX_PUT_ATTEMPTS exceeded - chunk {chunk_num}")
-                    self.unregister_stream_consumer(queue, q)
-                    break
 
     def mk_connector(self):
         # https://github.com/netblue30/fdns/issues/47
