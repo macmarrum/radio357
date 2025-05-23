@@ -327,7 +327,7 @@ class Macmarrum357():
         if self.should_log_in:
             # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
             await self.refresh_token_or_log_in_and_dump_cookies_if_needed(macmarrum_log)
-            run_periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
+            asyncio.create_task(self.run_periodic_token_refresh())
         resp = None
         i = 0
         chunk_num = 0
@@ -420,8 +420,6 @@ class Macmarrum357():
         if not self.session.closed:
             await self.session.close()
         self.is_client_running = False
-        if self.should_log_in:
-            await run_periodic_token_refresh_task
 
     async def distribute_to_consumers(self, chunk, chunk_num):
         if self.chunk_sizes_queue is not None:
