@@ -1,6 +1,6 @@
-# radio357
+# aplikacja radio357
 
-## aiomacmarrum357 – alternatywny odtwarzacz i/lub nagrywarka patrona Radia 357, działający z wiersza poleceń
+## aiomacmarrum357 – alternatywny odtwarzacz i/lub nagrywarka Radia 357 dla patronów, działający z wiersza poleceń
 
 Odtwarza i/lub nagrywa Radio 357 na żywo, jako zalogowany użytkownik, z pominięciem komunikatu startowego.
 
@@ -8,13 +8,18 @@ Loguje użytkownika, pobiera ciasteczka i używa ich do odbierania strumienia na
 Pobierany strumień udostępnia lokalnie przez HTTP dla potrzeb odtwarzania, np. przy użyciu **mpv**, Windows Media Player, itp.
 Opcjonalnie nagrywa strumień do jednego lub kilku plików, zmieniając je o określonych porach.
 
-Odtwarzanie\
+> Przykładowo, chcę słuchać audycji niedzielnej o 20:00, ale często spóźniam się i zaczynam około 20:30.\
+> Włączam zatem nagrywanie audycji, a o 20:30 uruchamiam odtwarzanie od początku nagrywanego pliku.
+> 1. Dodaję polecenie do Harmonogramu Zadań Windows ([instrukcje](https://pl.101-help.com/jak-utworzyc-automatyczne-zadanie-za-pomoca-harmonogramu-zadan-w-systemie-windows-11-10-6868e186b0/)) `"C:\Program Files\Python311\python.exe" "C:\Users\Mac\aiomacmarrum357.py" --record='{"output_dir": "C:\\Users\\Mac\\radio357", "switch_file_times": ["22:00"]}'`
+> 2. Między 20:00 a 22:00 uruchamiam odtwarzanie http://localhost:8357/file-then-live, np. w **mpv** albo VLC.
+
+Odtwarzanie na żywo\
 `python aiomacmarrum357.py --play`\
 lub\
 `python aiomacmarrum357.py --play-with='["C:\\Program Files\\mpv\\mpv.exe", "--force-window=immediate", "--fs=no"]'`
 
 Nagrywanie\
-`python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["9:00", "12:00"]}'`
+`python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\radio357", "switch_file_times": ["9:00", "12:00"]}'`
 
 Powyższe polecenie zapisze program na żywo do plików, zmieniając je o określonych porach;
 w przypadku uruchomienia o 6:00 zapisze dwa pliki:
@@ -23,11 +28,14 @@ w przypadku uruchomienia o 6:00 zapisze dwa pliki:
 
 ***Wskazówka**: wartości dla opcji `--play-with=` oraz `--record=` są w formacie JSON*
 
+Nagrywanie i odtwarzanie na żywo\
+`python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\radio357", "switch_file_times": ["9:00", "12:00"]}' --play`
+
 Nagrywanie ze zmianą pliku o pełnej godzinie od momentu uruchomienia do północy,
 a po każdej zmianie uruchomienie w tle polecenia `aac-to-m4a`\
-`python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
+`python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\radio357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
 
-Przykładowy skrypt `aac-to-m4a` – ścieżka do nagranego pliku jest przekazywana jako pierwszy argument
+Przykładowy skrypt `aac-to-m4a` – **aiomacmarrum357.py** przekaże ścieżkę do nagranego pliku jako pierwszy argument
 
 ```shell
 #!/bin/bash
@@ -40,11 +48,15 @@ Jeżeli w wierszu poleceń podane jest `--sleep=`, np. `--sleep=30`,
 
 **Poniższe polecenia mają sens gdy **aiomacmarrum357.py** jest już uruchomiony.**
 
-Odtwarzanie stumienia na żywo z lokalnego serwera HTTP na hoście `localhost` przy użyciu **mpv**\
+Odtwarzanie przy użyciu **mpv** strumienia na żywo z lokalnego serwera HTTP na hoście `localhost` aż do zakończenia nagrywania\
 `mpv http://localhost:8357/live`
 
-Odtwarzanie z lokalnego serwera HTTP na hoście `192.168.0.1`, od początku nagrywanego pliku, a potem na żywo, przy użyciu **mpv**\
+Odtwarzanie przy użyciu **mpv** z lokalnego serwera HTTP na hoście `192.168.0.1` od początku nagrywanego pliku, a potem na żywo aż do zakończenia nagrywania\
 `mpv http://192.168.0.1:8357/file-then-live`
+
+Jak powyżej, ale odtwarzanie jest kontynuowane po zakończeniu nagrywania\
+`mpv http://localhost:8357/live?forever` \
+`mpv http://192.168.0.1:8357/file-then-live?forever`
 
 ### Konfiguracja
 
@@ -78,7 +90,7 @@ Następująca instrukcja włączy icy-title w strumieniu /live, o ile odtwarzacz
 
 ---
 
-## macmarrum357 – alternatywny odtwarzacz patrona Radia 357, działający z wiersza poleceń
+## macmarrum357 – alternatywny odtwarzacz Radia 357 dla patronów, działający z wiersza poleceń
 
 Odtwarza Radio 357 na żywo, jako zalogowany użytkownik, z pominięciem komunikatu startowego.
 
