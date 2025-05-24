@@ -35,6 +35,7 @@ from aiohttp import AsyncResolver, CookieJar, web
 UTF8 = 'UTF-8'
 
 macmarrum_log = logging.getLogger('macmarrum357')
+switch_log = logging.getLogger('macmarrum357.switch')
 token_log = logging.getLogger('macmarrum357.token')
 web_log = logging.getLogger('macmarrum357.web')
 recorder_log = logging.getLogger('macmarrum357.recorder')
@@ -497,7 +498,7 @@ class Macmarrum357():
             self.spawn_on_file_start_if_requested(on_file_start, self.file_path)
             recorder_log.info(f"{num}/{count} {duration} {self.file_path} - queue #{q}")
         except Exception as e:
-            recorder_log.critical(f"{type(e).__name__}: {e} - queue #{q}")
+            recorder_log.critical(f"run_recorder - {type(e).__name__} {e} - queue #{q}")
             raise
         try:
             while True:
@@ -566,11 +567,16 @@ class Macmarrum357():
                 subprocess.Popen(args)
 
     async def init_r357_and_set_cookies_changed_if_needed(self, logger: logging.Logger):
+        """Doesn't dump cookies directly. Only signals the need.
+        Cookies will be dumped with the next refresh_token_or_log_in_and_dump_cookies_if_needed"""
         r357_pid = self.get_cookie(c.R357_PID)
         await self.init_r357(logger)
         r357_pid_new = self.get_cookie(c.R357_PID)
         if r357_pid_new.value != r357_pid.value or r357_pid_new.expires != r357_pid.expires:
             self.is_cookies_changed = True
+        old_expires = datetime.fromtimestamp(r357_pid.expires, timezone.utc).astimezone().isoformat(sep=' ')
+        new_expires = datetime.fromtimestamp(r357_pid_new.expires, timezone.utc).astimezone().isoformat(sep=' ')
+        logger.debug(f"init_r357_and_set_cookies_changed_if_needed => {self.is_cookies_changed} - expires {{old: {old_expires}, new: {new_expires}}}")
 
     def get_cookie(self, name, domain=None):
         parse_date = aiohttp.cookiejar.CookieJar._parse_date
@@ -591,7 +597,10 @@ class Macmarrum357():
         async with self.session.get(url, headers=headers) as resp:
             logger.debug(f"init_r357 => {resp.status}")
             resp.raise_for_status()
-            assert self.get_cookie(c.R357_PID).value, f"{c.R357_PID} is missing. This is unexpected."
+            if not self.get_cookie(c.R357_PID).value:
+                msg = f"init_r357 - cookie {c.R357_PID} is missing"
+                logger.critical(msg)
+                raise RuntimeError(msg)
 
     async def run_periodic_token_refresh(self):
         token_log.info('run_periodic_token_refresh')
@@ -640,7 +649,7 @@ class Macmarrum357():
         # try to refresh the token before falling back to logging in
         is_to_log_in = False
         refresh_token_cookie = self.get_cookie(c.REFRESH_TOKEN)
-        if not refresh_token_cookie.value:
+        if not refresh_token_cookie.value:  # no cookie - log in
             is_to_log_in = True
         elif time() >= (expires_with_margin := refresh_token_cookie.expires - self._5M_AS_SECONDS):  # it's been at least 55 min since last refresh
             is_to_log_in = not await self.refresh_token(logger)
@@ -746,6 +755,10 @@ class Macmarrum357():
                     chunk = await asyncio.wait_for(queue.get(), self.QUEUE_EMPTY_TIMEOUT_SEC)
                 except asyncio.TimeoutError:
                     web_log.debug(f"handle_request_live - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
+                    self.unregister_stream_consumer(queue, q)
+                    break
+                except asyncio.CancelledError:
+                    web_log.debug(f"handle_request_live - queue #{q} - CancelledError during wait_for queue.get()")
                     self.unregister_stream_consumer(queue, q)
                     break
             if should_serve_icy_title:
@@ -873,10 +886,19 @@ class SwitchFileDateTime:
     def _validate(self):
         switch_file_times = self._switch_file_times
         switch_file_times_len = len(switch_file_times)
-        assert switch_file_times_len > 0, f"expected size > 0, got {switch_file_times_len}"
+        if not switch_file_times_len > 0:
+            msg = f"expected size > 0, got {switch_file_times_len=}"
+            switch_log.critical(msg)
+            raise ValueError(msg)
         if self.is_every_hour:
-            assert switch_file_times_len == 2, f"expected size == 2, got {switch_file_times_len}"
-        assert self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times)
+            if not switch_file_times_len == 2:
+                msg = f"expected size == 2, got {switch_file_times_len=}"
+                switch_log.critical(msg)
+                raise ValueError(msg)
+        if not self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times):
+            msg = 'not self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times)'
+            switch_log.critical(msg)
+            raise ValueError(msg)
         self.make_switch_file_times_aware_if_needed()
 
     def make_switch_file_times_aware_if_needed(self):
@@ -930,7 +952,10 @@ class SwitchFileDateTime:
         return self._count
 
     def _parse(self):
-        assert not self.is_all_datetime
+        if self.is_all_datetime:
+            msg = 'is_all_datetime - nothing to parse'
+            switch_log.critical(msg)
+            raise TypeError(msg)
         parsed_switch_file_times = []
         for elem in self._switch_file_times:
             if isinstance(elem, int):
