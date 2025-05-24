@@ -263,7 +263,6 @@ class Macmarrum357():
         self.icy_title_bytes = b''
         self.icy_title_str = ''
         self.is_distribute_to_consumers_initial_run = True
-        self.chunk_sizes_queue = None  # change it to asyncio.Queue() to enable write_chunk_sizes_to_file for analysis
         self.is_queue0_registered = False
         self.forever_qs = {}
 
@@ -421,8 +420,6 @@ class Macmarrum357():
         self.is_client_running = False
 
     async def distribute_to_consumers(self, chunk, chunk_num):
-        if self.chunk_sizes_queue is not None:
-            self.chunk_sizes_queue.put_nowait(len(chunk))
         if self.is_distribute_to_consumers_initial_run:
             self.is_distribute_to_consumers_initial_run = False
             sec = 0.1
@@ -714,6 +711,28 @@ class Macmarrum357():
         else:
             macmarrum_log.debug(f"dump_cookies_if_changed - unexpected cookie_jar type: {cookie_jar.__class__.__name__}")
 
+    async def run_chunk_sizes_collector(self):
+        path = None
+        for argv in self.argv:
+            if argv.startswith('--chunk-sizes-file='):
+                path = Path(argv.split('=')[1])
+                break
+        if not path:
+            return
+        while not self.consumers_length:
+            await asyncio.sleep(1)
+        queue, q = self.register_stream_consumer_to_get_queue()
+        macmarrum_log.debug(f"run_chunk_sizes_collector - queue #{q} -> {path}")
+        async with aiofiles.open(path, 'a', encoding='L1') as fo:
+            while self.is_client_running:
+                try:
+                    chunk = await asyncio.wait_for(queue.get(), self.QUEUE_EMPTY_TIMEOUT_SEC)
+                    await fo.write(f"{len(chunk)}\n")
+                except (TimeoutError, asyncio.CancelledError, IOError) as e:
+                    macmarrum_log.debug(f"run_chunk_sizes_collector - queue #{q} - {type(e).__name__} {e}")
+                    self.unregister_stream_consumer(queue, q)
+                    break
+
     async def handle_request_live(self, request: web.Request):
         forever = c.FOREVER in request.query
         _forever = f" - {c.FOREVER}" if forever else ''
@@ -886,17 +905,17 @@ class SwitchFileDateTime:
     def _validate(self):
         switch_file_times = self._switch_file_times
         switch_file_times_len = len(switch_file_times)
-        if not switch_file_times_len > 0:
+        if switch_file_times_len == 0:
             msg = f"expected size > 0, got {switch_file_times_len=}"
             switch_log.critical(msg)
             raise ValueError(msg)
         if self.is_every_hour:
-            if not switch_file_times_len == 2:
+            if switch_file_times_len != 2:
                 msg = f"expected size == 2, got {switch_file_times_len=}"
                 switch_log.critical(msg)
                 raise ValueError(msg)
-        if not self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times):
-            msg = 'not self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times)'
+        if not (self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times)):
+            msg = 'not ( self.is_all_datetime or all(isinstance(e, int) or self.RX_H_MM_SS.match(e) for e in switch_file_times) )'
             switch_log.critical(msg)
             raise ValueError(msg)
         self.make_switch_file_times_aware_if_needed()
@@ -1117,18 +1136,13 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     port = app[c.MACMARRUM357_PORT]
     spawn_player_if_requested(macmarrum357, host, port)
     shutdown_task = asyncio.create_task(shutdown_app_when_no_consumers(macmarrum357))
-    chunk_sizes_task = asyncio.create_task(write_chunk_sizes_to_file(macmarrum357))
+    chunk_sizes_task = asyncio.create_task(macmarrum357.run_chunk_sizes_collector())
     yield
     chunk_sizes_task.cancel()
-    shutdown_task.cancel()
     if recorder_kwargs:
         live_stream_recorder_task.cancel()
     live_stream_client_task.cancel()
-    await chunk_sizes_task
-    await shutdown_task
-    if recorder_kwargs:
-        await live_stream_recorder_task
-    await live_stream_client_task
+    shutdown_task.cancel()
 
 
 def web_log_info_splitlines(message: str):
