@@ -1100,16 +1100,6 @@ def spawn_player_if_requested(macmarrum357, host, port):
         subprocess.Popen(player_args)
 
 
-async def write_chunk_sizes_to_file(macmarrum357: Macmarrum357):
-    if macmarrum357.chunk_sizes_queue is None:
-        return
-    chunk_sizes_txt = Path('/tmp/macmarrum357-chunk-sizes.txt')
-    async with aiofiles.open(chunk_sizes_txt, 'a', encoding='L1') as fo:
-        while macmarrum357.is_client_running:
-            chunk_size = await macmarrum357.chunk_sizes_queue.get()
-            await fo.write(f"{chunk_size}\n")
-
-
 async def shutdown_app_when_no_consumers(macmarrum357: Macmarrum357):
     while not macmarrum357.consumers_length:
         # web_log.debug(f"shutdown_app_when_no_consumers - wait for any consumer to appear")
@@ -1158,8 +1148,8 @@ def main(argv: list[str] = None):
     configure_logging()
     sleep_if_requested(argv)
     recorder_kwargs = get_recorder_kwargs(argv)
-    live_stream_server_app = web.Application()
     macmarrum357 = Macmarrum357(argv, recorder_kwargs)
+    live_stream_server_app = web.Application()
     live_stream_server_app[c.MACMARRUM357] = macmarrum357
     live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
     live_stream_server_app.add_routes([
