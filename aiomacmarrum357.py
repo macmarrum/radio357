@@ -854,6 +854,7 @@ class Macmarrum357():
             except Exception as e:  # incl. ConnectionResetError
                 web_log.debug(f"handle_request_file_then_live - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
+                break
         web_log.debug(f"handle_request_file_then_live - queue #{q}{_forever} - finish")
         return server_resp
 
