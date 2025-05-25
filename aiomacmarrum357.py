@@ -169,6 +169,7 @@ class c:
     FOREVER = 'forever'
     RECORD_ = '--record='
     PLAY_WITH_ = '--play-with='
+    QUEUE0_BYTE_SIZE_LIMIT = 'queue0_byte_size_limit'
     QUEUE_BYTE_SIZE_LIMIT = 'queue_byte_size_limit'
     CONCURRENT_QUEUES_LIMIT = 'concurrent_queues_limit'
     RETRY_AFTER = 'Retry-After'
@@ -231,9 +232,10 @@ class Macmarrum357():
     # with icy_title enabled, I can see icy_metaint: 16000
     # in the mp3 stream, 418 is the most common chunk size I've observed
     # in the aac stream, ~800
-    QUEUE_LENGTH_LIMIT = 0  # limit on the count of chunks in the queue - 0 means unlimited
-    DEFAULT_QUEUE_BYTE_SIZE_LIMIT = 100_000_000  # limit on size (in bytes) of all chunks in the queue
-    DEFAULT_CONCURRENT_QUEUES_LIMIT = 10  # limit on the number of concurrent consumers, after which status code 429 is sent
+    QUEUE_LENGTH_LIMIT = 0  # limit on the count of chunks in a queue - 0 means unlimited
+    DEFAULT_QUEUE0_BYTE_SIZE_LIMIT = 960_000  # (~60 sec) limit on size (in bytes) of all chunks in queue #0 - usually for writing to disk
+    DEFAULT_QUEUE_BYTE_SIZE_LIMIT = 80_000  # (~5 sec) limit on size (in bytes) of all chunks in a subsequent queue (where # > 0)
+    DEFAULT_CONCURRENT_QUEUES_LIMIT = 1_000  # limit on the number of concurrent consumers, post which status code 429 is sent
     RETRY_AFTER_HEADERS = {c.RETRY_AFTER: '300'}  # note: seconds as string - sent with status code 429
     QUEUE_EMPTY_TIMEOUT_SEC = 5.0  # when handling a http request, how long to wait for the next chunk before giving up
     ITER_FILE_CHUNK_SIZE = 8 * 1024
@@ -262,6 +264,8 @@ class Macmarrum357():
         self.queue_gen = ((ByteSizedAioQueue(self.QUEUE_LENGTH_LIMIT), q) for q in range(sys.maxsize))
         self._consumer_queues: list[tuple[ByteSizedAioQueue, int]] = []
         self.consumers_length = 0
+        queue0_byte_size_limit = self.conf.get(c.QUEUE0_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE0_BYTE_SIZE_LIMIT)
+        self.q0_to_byte_size_limit = {0: queue0_byte_size_limit}
         self.queue_byte_size_limit = self.conf.get(c.QUEUE_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT)
         self.concurrent_queues_limit = self.conf.get(c.CONCURRENT_QUEUES_LIMIT, self.DEFAULT_CONCURRENT_QUEUES_LIMIT)
         self.fo = None
@@ -315,8 +319,9 @@ class Macmarrum357():
                         # c.LIVE_STREAM_LOCATION_REPLACEMENTS: self.LOCATION_REPLACEMENTS,
                         c.ICY_TITLE: True,
                         c.PLAYER_ARGS: ['mpv', '--force-window=immediate', '--fs=no'],
-                        c.QUEUE_BYTE_SIZE_LIMIT: self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT,
-                        c.CONCURRENT_QUEUES_LIMIT: self.DEFAULT_CONCURRENT_QUEUES_LIMIT,
+                        # c.QUEUE0_BYTE_SIZE_LIMIT: self.DEFAULT_QUEUE0_BYTE_SIZE_LIMIT,
+                        # c.QUEUE_BYTE_SIZE_LIMIT: self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT,
+                        # c.CONCURRENT_QUEUES_LIMIT: self.DEFAULT_CONCURRENT_QUEUES_LIMIT,
                         }
                 tomli_w.dump(conf, fo)
         else:
@@ -448,8 +453,9 @@ class Macmarrum357():
                 except asyncio.QueueFull:
                     macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - QueueFull - chunk #{chunk_num}")
                     self.unregister_stream_consumer(queue, q)
-                if queue.byte_size > self.queue_byte_size_limit:  # QueueFull but in bytes, not length
-                    macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - queue_byte_size_limit exceeded ({self.queue_byte_size_limit}) - chunk #{chunk_num}")
+                byte_size_limit = self.q0_to_byte_size_limit.get(q, self.queue_byte_size_limit)  # get special limit for queue #0 or regular for other queues
+                if queue.byte_size > byte_size_limit:  # QueueFull but in bytes, not length
+                    macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - byte_size_limit exceeded ({byte_size_limit}) - chunk #{chunk_num}")
                     self.unregister_stream_consumer(queue, q)
         else:
             macmarrum_log.debug(f"no consumers - chunk #{chunk_num}")
@@ -739,7 +745,7 @@ class Macmarrum357():
             await asyncio.sleep(1)
         queue, q = self.register_stream_consumer_to_get_queue()
         macmarrum_log.debug(f"run_chunk_sizes_collector - queue #{q} -> {path}")
-        async with aiofiles.open(path, 'a', encoding='L1') as fo:
+        async with aiofiles.open(path, 'w', encoding='L1') as fo:
             while self.is_client_running:
                 try:
                     chunk = await asyncio.wait_for(queue.get(), self.QUEUE_EMPTY_TIMEOUT_SEC)
