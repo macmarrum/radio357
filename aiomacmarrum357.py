@@ -310,7 +310,7 @@ class Macmarrum357():
     def load_config(self):
         if not self.config_toml_path.exists():
             with self.config_toml_path.open('wb') as fo:
-                conf = {c.LOG_IN: False, c.EMAIL: '', c.PASSWORD: '',
+                conf = {c.LOG_IN: True, c.EMAIL: '', c.PASSWORD: '',
                         c.LIVE_STREAM_URL: self.STREAM,
                         # c.LIVE_STREAM_LOCATION_REPLACEMENTS: self.LOCATION_REPLACEMENTS,
                         c.ICY_TITLE: True,
@@ -813,7 +813,7 @@ class Macmarrum357():
                 if should_serve_icy_title:
                     await server_resp.write(icy_title_bytes)
             except Exception as e:  # incl. ConnectionResetError
-                web_log.debug(f"{handle_request} - {type(e).__name__}: {e} - queue #{q}")
+                web_log.debug(f"{handle_request} - queue #{q} - {type(e).__name__}: {e}")
                 self.unregister_stream_consumer(queue, q)
                 break
         web_log.debug(f"{handle_request} - queue #{q}{_forever} - finish")
@@ -842,7 +842,7 @@ class Macmarrum357():
                     try:
                         await server_resp.write(chunk)
                     except Exception as e:  # incl. ConnectionResetError
-                        web_log.debug(f"{handle_request} - {type(e).__name__}: {e} - {self.file_path.name}")
+                        web_log.debug(f"{handle_request} - {self.file_path.name} - {type(e).__name__}: {e}")
                         return server_resp
         else:
             web_log.warning(f"{handle_request} - no file - was --record= used?")
@@ -876,7 +876,7 @@ class Macmarrum357():
             try:
                 await server_resp.write(chunk)
             except Exception as e:  # incl. ConnectionResetError
-                web_log.debug(f"{handle_request} - {type(e).__name__}: {e} - queue #{q}")
+                web_log.debug(f"{handle_request} - queue #{q} - {type(e).__name__}: {e}")
                 self.unregister_stream_consumer(queue, q)
                 break
         web_log.debug(f"{handle_request} - queue #{q}{_forever} - finish")
