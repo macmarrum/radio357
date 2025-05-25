@@ -169,6 +169,10 @@ class c:
     FOREVER = 'forever'
     RECORD_ = '--record='
     PLAY_WITH_ = '--play-with='
+    QUEUE_BYTE_SIZE_LIMIT = 'queue_byte_size_limit'
+    CONCURRENT_QUEUES_LIMIT = 'concurrent_queues_limit'
+    RETRY_AFTER = 'Retry-After'
+    TOO_MANY_REQUESTS_TEXT = 'Too many requests - the server has reached its maximum global connection capacity'
 
 
 class Macmarrum357():
@@ -224,12 +228,14 @@ class Macmarrum357():
     HANDLER_START_BUFFER_SEC = 0
     CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER = 222
     CONSUMER_CONTENT_TYPE_WAIT_SEC = 0.1
-    # with icy_title enabled I can see icy_metaint: 16000 => 16 kB * 10_000 = 160 MB max queue size
-    # in the mp3 stream, 418 is the most common chunk size => 0.418 kB * 10_000 = 4180 kB (4 MB)
-    # in the aac stream, ~1 kB * 10_000 = ~10 MB
-    QUEUE_MAX_LEN = 10_000
-    QUEUE_COUNT_LIMIT = sys.maxsize
-    QUEUE_EMPTY_TIMEOUT_SEC = 5.0
+    # with icy_title enabled, I can see icy_metaint: 16000
+    # in the mp3 stream, 418 is the most common chunk size I've observed
+    # in the aac stream, ~800
+    QUEUE_LENGTH_LIMIT = 0  # limit on the count of chunks in the queue - 0 means unlimited
+    DEFAULT_QUEUE_BYTE_SIZE_LIMIT = 100_000_000  # limit on size (in bytes) of all chunks in the queue
+    DEFAULT_CONCURRENT_QUEUES_LIMIT = 10  # limit on the number of concurrent consumers, after which status code 429 is sent
+    RETRY_AFTER_HEADERS = {c.RETRY_AFTER: '300'}  # note: seconds as string - sent with status code 429
+    QUEUE_EMPTY_TIMEOUT_SEC = 5.0  # when handling a http request, how long to wait for the next chunk before giving up
     ITER_FILE_CHUNK_SIZE = 8 * 1024
     ITER_FILE_WAIT_SECS_FOR_DATA = 1
     config_toml_path = macmarrum357_path / 'config.toml'
@@ -253,9 +259,11 @@ class Macmarrum357():
         self.is_client_running = False
         self.session: aiohttp.ClientSession = None
         self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.DEFAULT_LOCATION_REPLACEMENTS)
-        self.queue_gen = ((asyncio.Queue(self.QUEUE_MAX_LEN), q) for q in range(self.QUEUE_COUNT_LIMIT))
-        self._consumer_queues: list[tuple[asyncio.Queue, int]] = []
+        self.queue_gen = ((ByteSizedAioQueue(self.QUEUE_LENGTH_LIMIT), q) for q in range(sys.maxsize))
+        self._consumer_queues: list[tuple[ByteSizedAioQueue, int]] = []
         self.consumers_length = 0
+        self.queue_byte_size_limit = self.conf.get(c.QUEUE_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT)
+        self.concurrent_queues_limit = self.conf.get(c.CONCURRENT_QUEUES_LIMIT, self.DEFAULT_CONCURRENT_QUEUES_LIMIT)
         self.fo = None
         self.file_path: Path = None
         self.content_type = None
@@ -277,6 +285,9 @@ class Macmarrum357():
             raise ValueError(message)
 
     def register_stream_consumer_to_get_queue(self, forever=False):
+        if self.consumers_length == self.concurrent_queues_limit:
+            macmarrum_log.info(f"register_stream_consumer => queue None - concurrent_queues_limit reached ({self.concurrent_queues_limit})")
+            return None, None
         queue, q = next(self.queue_gen)
         self._consumer_queues.append((queue, q))
         self.consumers_length += 1
@@ -303,7 +314,9 @@ class Macmarrum357():
                         c.LIVE_STREAM_URL: self.STREAM,
                         # c.LIVE_STREAM_LOCATION_REPLACEMENTS: self.LOCATION_REPLACEMENTS,
                         c.ICY_TITLE: True,
-                        c.PLAYER_ARGS: ['mpv', '--force-window=immediate', '--fs=no']
+                        c.PLAYER_ARGS: ['mpv', '--force-window=immediate', '--fs=no'],
+                        c.QUEUE_BYTE_SIZE_LIMIT: self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT,
+                        c.CONCURRENT_QUEUES_LIMIT: self.DEFAULT_CONCURRENT_QUEUES_LIMIT,
                         }
                 tomli_w.dump(conf, fo)
         else:
@@ -400,7 +413,7 @@ class Macmarrum357():
                     sec = 1800  # 240 min + 4 * 30*60 = 600 min (6h) since error
                 else:
                     sec = 3600  # after 6h since error, every 1h
-                macmarrum_log.error(f"{type(e).__name__}: {e} - chunk {chunk_num}")
+                macmarrum_log.error(f"{type(e).__name__}: {e} - chunk #{chunk_num}")
                 if i == 1 or sec >= 600:
                     macmarrum_log.error(traceback.format_exc())
                 if sec:
@@ -433,10 +446,13 @@ class Macmarrum357():
                 try:
                     queue.put_nowait(chunk)
                 except asyncio.QueueFull:
-                    macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - QueueFull - chunk {chunk_num}")
+                    macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - QueueFull - chunk #{chunk_num}")
+                    self.unregister_stream_consumer(queue, q)
+                if queue.byte_size > self.queue_byte_size_limit:  # QueueFull but in bytes, not length
+                    macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - queue_byte_size_limit exceeded ({self.queue_byte_size_limit}) - chunk #{chunk_num}")
                     self.unregister_stream_consumer(queue, q)
         else:
-            macmarrum_log.debug(f"no consumers - chunk {chunk_num}")
+            macmarrum_log.debug(f"no consumers - chunk #{chunk_num}")
             macmarrum_log.info('no consumers')
             raise NoConsumers()
 
@@ -734,14 +750,18 @@ class Macmarrum357():
                     break
 
     async def handle_request_live(self, request: web.Request):
+        handle_request = 'handle_request_live'
         forever = c.FOREVER in request.query
         _forever = f" - {c.FOREVER}" if forever else ''
+        web_log_request(f"{handle_request}{_forever}", request)
         queue, q = self.register_stream_consumer_to_get_queue(forever=forever)
-        web_log_request(f"handle_request_live - queue #{q}", request)
+        if not queue:
+            web_log.debug(f"{handle_request} => 429 Too Many Requests (globally)")
+            return web.Response(status=429, headers=self.RETRY_AFTER_HEADERS, text=c.TOO_MANY_REQUESTS_TEXT)
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
-                web_log.debug(f"handle_request_live - queue #{q} - content_type still None - after {self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
+                web_log.debug(f"{handle_request} - queue #{q} - content_type still None - after {self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
             await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
         should_serve_icy_title = self.icy_metaint and request.headers.get(c.ICY_METADATA) == '1'
@@ -749,7 +769,7 @@ class Macmarrum357():
             headers = {c.ICY_METAINT: str(self.icy_metaint)}
         else:
             headers = None
-        web_log.debug(f"handle_request_live - queue #{q} => respond {c.CONTENT_TYPE}: {self.content_type}, {c.TRANSFER_ENCODING}: chunked, headers: {headers}")
+        web_log.debug(f"{handle_request} - queue #{q} => respond {c.CONTENT_TYPE}: {self.content_type}, {c.TRANSFER_ENCODING}: chunked, headers: {headers}")
         server_resp = web.Response(content_type=self.content_type, headers=headers)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
@@ -761,7 +781,7 @@ class Macmarrum357():
             while (duration := monotonic() - t) < handler_start_buffer_sec:
                 buffer += await queue.get()
                 i += 1
-            web_log.debug(f"handle_request_live - queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+            web_log.debug(f"{handle_request} - queue #{q} - reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         icy_title_bytes = b''
         icy_title_str_to_count = {}
         while True:
@@ -773,11 +793,11 @@ class Macmarrum357():
                 try:
                     chunk = await asyncio.wait_for(queue.get(), self.QUEUE_EMPTY_TIMEOUT_SEC)
                 except asyncio.TimeoutError:
-                    web_log.debug(f"handle_request_live - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
+                    web_log.debug(f"{handle_request} - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
                     self.unregister_stream_consumer(queue, q)
                     break
                 except asyncio.CancelledError:
-                    web_log.debug(f"handle_request_live - queue #{q} - CancelledError during wait_for queue.get()")
+                    web_log.debug(f"{handle_request} - queue #{q} - CancelledError during wait_for queue.get()")
                     self.unregister_stream_consumer(queue, q)
                     break
             if should_serve_icy_title:
@@ -793,39 +813,43 @@ class Macmarrum357():
                 if should_serve_icy_title:
                     await server_resp.write(icy_title_bytes)
             except Exception as e:  # incl. ConnectionResetError
-                web_log.debug(f"handle_request_live - {type(e).__name__}: {e} - queue #{q}")
+                web_log.debug(f"{handle_request} - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
                 break
-        web_log.debug(f"handle_request_live - queue #{q}{_forever} - finish")
+        web_log.debug(f"{handle_request} - queue #{q}{_forever} - finish")
         return server_resp
 
     async def handle_request_file_then_live(self, request: web.Request):
+        handle_request = 'handle_request_file_then_live'
         forever = c.FOREVER in request.query
         _forever = f" - {c.FOREVER}" if forever else ''
-        web_log_request(f"handle_request_file_then_live{_forever}", request)
+        web_log_request(f"{handle_request}{_forever}", request)
         i = 0
         while self.content_type is None:
             if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
-                web_log.debug(f"handle_request_file_then_live - content_type still None - after {self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
+                web_log.debug(f"{handle_request} - content_type still None - after {self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
             await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
-        web_log.debug(f"handle_request_file_then_live => respond {c.CONTENT_TYPE}: {self.content_type}, {c.TRANSFER_ENCODING}: chunked")
+        web_log.debug(f"{handle_request} => respond {c.CONTENT_TYPE}: {self.content_type}, {c.TRANSFER_ENCODING}: chunked")
         server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
         is_file_path = self.file_path is not None
         if is_file_path:
-            web_log.debug(f"handle_request_file_then_live - {self.file_path.name}")
+            web_log.debug(f"{handle_request} - {self.file_path.name}")
             async with aiofiles.open(self.file_path, 'rb') as fi:
                 while chunk := await fi.read(self.ITER_FILE_CHUNK_SIZE):
                     try:
                         await server_resp.write(chunk)
                     except Exception as e:  # incl. ConnectionResetError
-                        web_log.debug(f"handle_request_file_then_live - {type(e).__name__}: {e} - {self.file_path.name}")
+                        web_log.debug(f"{handle_request} - {type(e).__name__}: {e} - {self.file_path.name}")
                         return server_resp
+        else:
+            web_log.warning(f"{handle_request} - no file - was --record= used?")
         queue, q = self.register_stream_consumer_to_get_queue(forever=forever)
-        if not is_file_path:
-            web_log.warning('handle_request_file_then_live - no file - was --record= used?')
+        if not queue:
+            web_log.debug(f"{handle_request} => 429 Too Many Requests (globally)")
+            return web.Response(status=429, headers=self.RETRY_AFTER_HEADERS, text=c.TOO_MANY_REQUESTS_TEXT)
         buffer = b''
         handler_start_buffer_sec = self.conf.get(c.HANDLER_START_BUFFER_SEC, self.HANDLER_START_BUFFER_SEC)
         if not is_file_path and handler_start_buffer_sec:
@@ -834,9 +858,9 @@ class Macmarrum357():
             while (duration := monotonic() - t) < handler_start_buffer_sec:
                 buffer += await queue.get()
                 i += 1
-            web_log.debug(f"handle_request_file_then_live - queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
+            web_log.debug(f"{handle_request} - queue #{q} reached buffer in {duration:.2f} sec after reading {i} chunk(s)")
         else:
-            web_log.debug(f"handle_request_file_then_live - queue #{q}{_forever}")
+            web_log.debug(f"{handle_request} - queue #{q}{_forever}")
         while True:
             if buffer:
                 chunk = buffer
@@ -846,16 +870,16 @@ class Macmarrum357():
                 try:
                     chunk = await asyncio.wait_for(queue.get(), self.QUEUE_EMPTY_TIMEOUT_SEC)
                 except asyncio.TimeoutError:
-                    web_log.debug(f"handle_request_file_then_live - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
+                    web_log.debug(f"{handle_request} - queue #{q} - QUEUE_EMPTY_TIMEOUT_SEC exceeded")
                     self.unregister_stream_consumer(queue, q)
                     break
             try:
                 await server_resp.write(chunk)
             except Exception as e:  # incl. ConnectionResetError
-                web_log.debug(f"handle_request_file_then_live - {type(e).__name__}: {e} - queue #{q}")
+                web_log.debug(f"{handle_request} - {type(e).__name__}: {e} - queue #{q}")
                 self.unregister_stream_consumer(queue, q)
                 break
-        web_log.debug(f"handle_request_file_then_live - queue #{q}{_forever} - finish")
+        web_log.debug(f"{handle_request} - queue #{q}{_forever} - finish")
         return server_resp
 
 
@@ -1053,6 +1077,30 @@ class SwitchFileDateTime:
             duration = end - start
             file_num += 1
             yield file_num, start, end, duration
+
+
+class ByteSizedAioQueue(asyncio.Queue):
+    """Tracks total size of all chunks in the queue, using sys.getsizeof by default"""
+
+    def __init__(self, maxsize=0, chunk_size_calculator: Callable = None):
+        super().__init__(maxsize=maxsize)
+        self._chunk_size_calculator = chunk_size_calculator if chunk_size_calculator else sys.getsizeof
+        self._byte_size = 0
+
+    def put_nowait(self, chunk):
+        super().put_nowait(chunk)
+        chunk_size = self._chunk_size_calculator(chunk)
+        self._byte_size += chunk_size
+
+    async def get(self):
+        chunk = await super().get()
+        chunk_size = self._chunk_size_calculator(chunk)
+        self._byte_size -= chunk_size
+        return chunk
+
+    @property
+    def byte_size(self):
+        return self._byte_size
 
 
 def sleep_if_requested(argv: list[str]):
