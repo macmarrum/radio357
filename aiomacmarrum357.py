@@ -242,7 +242,6 @@ class Macmarrum357():
     RETRY_AFTER_HEADERS = {c.RETRY_AFTER: '300'}  # note: seconds as string - sent with status code 429
     QUEUE_EMPTY_TIMEOUT_SEC = 5.0  # when handling a http request, how long to wait for the next chunk before giving up
     ITER_FILE_CHUNK_SIZE = 8 * 1024
-    ITER_FILE_WAIT_SECS_FOR_DATA = 1
     config_toml_path = macmarrum357_path / 'config.toml'
     aiohttp_cookiejar_pickle_path = macmarrum357_path / 'aiohttp_cookiejar.pickle'
     OUTPUT_FILE_MODE = 'ab'
