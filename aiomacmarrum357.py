@@ -53,6 +53,9 @@ def get_appdata() -> Path:
 macmarrum357_path = get_appdata() / 'macmarrum357'
 macmarrum357_path.mkdir(exist_ok=True)
 logging_toml_path = macmarrum357_path / 'logging.toml'
+for arg in sys.argv:
+    if arg.startswith('--logging-toml-path='):
+        logging_toml_path = Path(arg.removeprefix('--logging-toml-path='))
 
 LOGGING_CONFIG_DEFAULT = {
     "version": 1,
@@ -99,9 +102,9 @@ def configure_logging():
         with logging_toml_path.open('rb') as fi:
             dict_config = tomllib.load(fi)
     except FileNotFoundError:
+        dict_config = LOGGING_CONFIG_DEFAULT
         with logging_toml_path.open('wb') as fo:
             tomli_w.dump(LOGGING_CONFIG_DEFAULT, fo)
-            dict_config = LOGGING_CONFIG_DEFAULT
     logging.config.dictConfig(dict_config)
     macmarrum_log.debug(f"configure_logging: {dict_config}")
 
