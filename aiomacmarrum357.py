@@ -169,6 +169,8 @@ class c:
     FOREVER = 'forever'
     RECORD_ = '--record='
     PLAY_WITH_ = '--play-with='
+    QUEUE0_LENGTH_LIMIT = 'queue0_length_limit'
+    QUEUE_LENGTH_LIMIT = 'queue_length_limit'
     QUEUE0_BYTE_SIZE_LIMIT = 'queue0_byte_size_limit'
     QUEUE_BYTE_SIZE_LIMIT = 'queue_byte_size_limit'
     CONCURRENT_QUEUES_LIMIT = 'concurrent_queues_limit'
@@ -232,7 +234,8 @@ class Macmarrum357():
     # with icy_title enabled, I can see icy_metaint: 16000
     # in the mp3 stream, 418 is the most common chunk size I've observed
     # in the aac stream, ~800
-    QUEUE_LENGTH_LIMIT = 0  # limit on the count of chunks in a queue - 0 means unlimited
+    DEFAULT_QUEUE0_LENGTH_LIMIT = 0  # 2400  # limit on the count of chunks in a queue - 0 means unlimited
+    DEFAULT_QUEUE_LENGTH_LIMIT = 0  # 200  # limit on the count of chunks in a queue - 0 means unlimited
     DEFAULT_QUEUE0_BYTE_SIZE_LIMIT = 960_000  # (~60 sec) limit on size (in bytes) of all chunks in queue #0 - usually for writing to disk
     DEFAULT_QUEUE_BYTE_SIZE_LIMIT = 80_000  # (~5 sec) limit on size (in bytes) of all chunks in a subsequent queue (where # > 0)
     DEFAULT_CONCURRENT_QUEUES_LIMIT = 1_000  # limit on the number of concurrent consumers, post which status code 429 is sent
@@ -261,12 +264,13 @@ class Macmarrum357():
         self.is_client_running = False
         self.session: aiohttp.ClientSession = None
         self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.DEFAULT_LOCATION_REPLACEMENTS)
-        self.queue_gen = ((ByteSizedAioQueue(self.QUEUE_LENGTH_LIMIT), q) for q in range(sys.maxsize))
+        queue0_length_limit = self.conf.get(c.QUEUE0_LENGTH_LIMIT, self.DEFAULT_QUEUE0_LENGTH_LIMIT)
+        queue_length_limit = self.conf.get(c.QUEUE_LENGTH_LIMIT, self.DEFAULT_QUEUE_LENGTH_LIMIT)
+        queue0_byte_size_limit = self.conf.get(c.QUEUE0_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE0_BYTE_SIZE_LIMIT)
+        queue_byte_size_limit = self.conf.get(c.QUEUE_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT)
+        self.queue_gen = ((ByteSizedAioQueue(*(queue0_length_limit, queue0_byte_size_limit) if q == 0 else (queue_length_limit, queue_byte_size_limit)), q) for q in range(sys.maxsize))
         self._consumer_queues: list[tuple[ByteSizedAioQueue, int]] = []
         self.consumers_length = 0
-        queue0_byte_size_limit = self.conf.get(c.QUEUE0_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE0_BYTE_SIZE_LIMIT)
-        self.q0_to_byte_size_limit = {0: queue0_byte_size_limit}
-        self.queue_byte_size_limit = self.conf.get(c.QUEUE_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT)
         self.concurrent_queues_limit = self.conf.get(c.CONCURRENT_QUEUES_LIMIT, self.DEFAULT_CONCURRENT_QUEUES_LIMIT)
         self.fo = None
         self.file_path: Path = None
@@ -304,12 +308,15 @@ class Macmarrum357():
         return queue, q
 
     def unregister_stream_consumer(self, queue, q):
-        macmarrum_log.debug(f"unregister_stream_consumer - queue #{q}")
-        self._consumer_queues.remove((queue, q))
-        self.consumers_length -= 1
-        if q == 0:
-            self.is_queue0_registered = False
-        self.forever_qs.pop(q, None)
+        try:
+            self._consumer_queues.remove((queue, q))
+            self.consumers_length -= 1
+            if q == 0:
+                self.is_queue0_registered = False
+            self.forever_qs.pop(q, None)
+            macmarrum_log.debug(f"unregister_stream_consumer - queue #{q}")
+        except ValueError:
+            macmarrum_log.debug(f"unregister_stream_consumer - queue #{q} already unregistered")
 
     def load_config(self):
         if not self.config_toml_path.exists():
@@ -452,10 +459,6 @@ class Macmarrum357():
                     queue.put_nowait(chunk)
                 except asyncio.QueueFull:
                     macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - QueueFull - chunk #{chunk_num}")
-                    self.unregister_stream_consumer(queue, q)
-                byte_size_limit = self.q0_to_byte_size_limit.get(q, self.queue_byte_size_limit)  # get special limit for queue #0 or regular for other queues
-                if queue.byte_size > byte_size_limit:  # QueueFull but in bytes, not length
-                    macmarrum_log.warning(f"distribute_to_consumers - queue #{q} - byte_size_limit exceeded ({byte_size_limit}) - chunk #{chunk_num}")
                     self.unregister_stream_consumer(queue, q)
         else:
             macmarrum_log.debug(f"no consumers - chunk #{chunk_num}")
@@ -1085,23 +1088,28 @@ class SwitchFileDateTime:
             yield file_num, start, end, duration
 
 
-class ByteSizedAioQueue(asyncio.Queue):
+class ByteSizedAioQueue():
     """Tracks total size of all chunks in the queue, using sys.getsizeof by default"""
 
-    def __init__(self, maxsize=0, chunk_size_calculator: Callable = None):
-        super().__init__(maxsize=maxsize)
+    def __init__(self, maxsize=0, queue_byte_size_limit=0, chunk_size_calculator: Callable = None):
+        self._queue = asyncio.Queue(maxsize=maxsize)
+        self._queue_byte_size_limit = queue_byte_size_limit
         self._chunk_size_calculator = chunk_size_calculator if chunk_size_calculator else sys.getsizeof
         self._byte_size = 0
 
-    def put_nowait(self, chunk):
-        super().put_nowait(chunk)
-        chunk_size = self._chunk_size_calculator(chunk)
-        self._byte_size += chunk_size
+    def put_nowait(self, chunk: bytes):
+        if self._byte_size > self._queue_byte_size_limit:
+            raise asyncio.QueueFull(f"queue_byte_size_limit reached ({self._queue_byte_size_limit})")
+        self._queue.put_nowait(chunk)
+        if self._queue_byte_size_limit:
+            chunk_size = self._chunk_size_calculator(chunk)
+            self._byte_size += chunk_size
 
-    async def get(self):
-        chunk = await super().get()
-        chunk_size = self._chunk_size_calculator(chunk)
-        self._byte_size -= chunk_size
+    async def get(self) -> bytes:
+        chunk = await self._queue.get()
+        if self._queue_byte_size_limit:
+            chunk_size = self._chunk_size_calculator(chunk)
+            self._byte_size -= chunk_size
         return chunk
 
     @property
