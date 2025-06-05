@@ -55,7 +55,7 @@ macmarrum357_path.mkdir(exist_ok=True)
 logging_toml_path = macmarrum357_path / 'logging.toml'
 for arg in sys.argv:
     if arg.startswith('--logging-toml-path='):
-        logging_toml_path = Path(arg.removeprefix('--logging-toml-path='))
+        logging_toml_path = Path(arg.removeprefix('--logging-toml-path=')).expanduser()
 
 LOGGING_CONFIG_DEFAULT = {
     "version": 1,
@@ -742,7 +742,7 @@ class Macmarrum357():
         path = None
         for argv in self.argv:
             if argv.startswith('--chunk-sizes-file='):
-                path = Path(argv.split('=')[1])
+                path = Path(argv.split('=')[1]).expanduser()
                 break
         if not path:
             return
