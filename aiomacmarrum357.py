@@ -689,7 +689,7 @@ class Macmarrum357():
         async with self.session.post(url, headers=headers, json=_json) as resp:
             logger.debug(f"refresh_token => {resp.status}")
             if resp.status == 200:
-                await self.update_and_persist_tokens_from_resp(resp, logger)
+                await self.update_cookies_based_on_tokens_from_resp(resp, logger)
                 return True
             else:
                 return False
@@ -702,14 +702,14 @@ class Macmarrum357():
         async with self.session.post(url, headers=headers, json=credentials) as resp:
             logger.debug(f"log_in => {resp.status}")
             if resp.status == 200:
-                await self.update_and_persist_tokens_from_resp(resp, logger)
+                await self.update_cookies_based_on_tokens_from_resp(resp, logger)
                 return True
             else:
                 return False
 
-    async def update_and_persist_tokens_from_resp(self, resp, logger: logging.Logger):
+    async def update_cookies_based_on_tokens_from_resp(self, resp, logger: logging.Logger):
         d = await resp.json()
-        logger.debug('update_and_persist_tokens_from_resp - $json')
+        logger.debug('update_cookies_based_on_tokens_from_resp - $json')
         expires_int = int((datetime.now().replace(microsecond=0) + self.TOKEN_VALIDITY_DELTA).timestamp())
         expires_str = email.utils.formatdate(expires_int, usegmt=True)
         name_to_cookie = {
@@ -771,10 +771,10 @@ class Macmarrum357():
             return web.Response(status=429, headers=self.RETRY_AFTER_HEADERS, text=c.TOO_MANY_REQUESTS_TEXT)
         i = 0
         while self.content_type is None:
-            if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
+            await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
+            if (i := i + 1) >= self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
                 web_log.debug(f"{handle_request} - queue #{q} - content_type still None - after {self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
-            await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
         should_serve_icy_title = self.icy_metaint and request.headers.get(c.ICY_METADATA) == '1'
         if should_serve_icy_title:
             headers = {c.ICY_METAINT: str(self.icy_metaint)}
@@ -837,10 +837,10 @@ class Macmarrum357():
         web_log_request(f"{handle_request}{_forever}", request)
         i = 0
         while self.content_type is None:
-            if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
+            await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
+            if (i := i + 1) >= self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
                 web_log.debug(f"{handle_request} - content_type still None - after {self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec")
                 break
-            await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
         web_log.debug(f"{handle_request} => respond {c.CONTENT_TYPE}: {self.content_type}, {c.TRANSFER_ENCODING}: chunked")
         server_resp = web.Response(content_type=self.content_type)
         server_resp.enable_chunked_encoding()
