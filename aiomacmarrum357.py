@@ -468,10 +468,13 @@ class Macmarrum357():
             raise NoConsumers()
 
     def mk_connector(self):
-        # https://github.com/netblue30/fdns/issues/47
+        # fdns bug affecting aiohttp: https://github.com/netblue30/fdns/issues/47
+        # workaround: use different name server(s)
+        # https://docs.aiohttp.org/en/stable/client_advanced.html#resolving-using-custom-nameservers
         if nameservers := self.conf.get(c.NAMESERVERS):
             try:
-                connector = aiohttp.TCPConnector(resolver=AsyncResolver(nameservers=nameservers))
+                resolver = AsyncResolver(nameservers=nameservers)
+                connector = aiohttp.TCPConnector(resolver=resolver)
             except Exception as e:
                 macmarrum_log.error(f"{type(e).__name__} {e}")
                 raise
@@ -1128,12 +1131,6 @@ def sleep_if_requested(argv: list[str]):
             return
 
 
-class MyPolicy(asyncio.DefaultEventLoopPolicy):
-    def new_event_loop(self):
-        selector = selectors.SelectSelector()
-        return asyncio.SelectorEventLoop(selector)
-
-
 def get_recorder_kwargs(argv: list[str]):
     for arg in argv:
         if arg.startswith(c.RECORD_):
@@ -1226,7 +1223,8 @@ def main(argv: list[str] = None):
     live_stream_server_app[c.MACMARRUM357_HOST] = host
     live_stream_server_app[c.MACMARRUM357_PORT] = port
     if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
-        asyncio.set_event_loop_policy(MyPolicy())
+        # aiodns requires SelectorEventLoop on Windows: https://github.com/aio-libs/aiodns/issues/78
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines)
 
 
