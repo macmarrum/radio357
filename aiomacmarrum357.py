@@ -183,12 +183,10 @@ class c:
 
 class Macmarrum357():
     r"""
-    Plays the live stream of Radio 357, as a logged-in user, which skips start-up announcements.
-
-    Logs in, gets cookies and uses them to receive the live stream.
-    Makes the stream available locally via http so that it can be played,
-    e.g. with **mpv**, Windows Media Player, etc.
-    Optionally records the stream to one or several files, changing them at specified times.
+    This software allows you to:
+    Play Radio 357's live stream as a logged-in user, skipping start-up announcements.
+    Record the stream to one or more files, with options to change files at specified times.
+    Access the stream locally via HTTP, making it compatible with media players like **mpv** and Windows Media Player.
 
     Play
     `python aiomacmarrum357.py --play`
@@ -205,7 +203,7 @@ class Macmarrum357():
     Record to files changed on the hour since the start until midnight, and spawn `aac-to-m4a` after each change
     `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
 
-    Note: the values for options `--play=` and `--record=` are in JSON format
+    Note: The --play= and --record= options use JSON format for their values
 
     Configuration
 
@@ -214,13 +212,15 @@ class Macmarrum357():
     or
     - ~/.config/macmarrum357/config.toml – on Unix
 
-    The path to a player used with `--play` can be set in the same file, and player options:
-    `player_args = ['C:\Program Files\mpv\mpv.exe', '--force-window=immediate', '--fs=no']`\
-    as well as IP of the network interface and port where the stream will be served locally
-    `host = '0.0.0.0`
-    `port = 8357`
-    The following can be set to enable icy-title in the /live stream, if your player supports it (**mpv** does):
-    `icy_title = true`
+    The path to your player and its options, along with the network interface IP and port for local stream serving, can be configured in the same file.
+    For example:
+    ```
+    player_args = ['C:\Program Files\mpv\mpv.exe', '--force-window=immediate', '--fs=no']
+    host = '0.0.0.0'
+    port = 8357
+    ```
+    Additionally, to enable icy-title in the /live stream (if your player supports it, like **mpv**), set:
+    `icy_title = True`
     """
     STREAM = 'https://stream.radio357.pl/?s=www'
     REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
