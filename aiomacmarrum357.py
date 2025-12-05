@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # aiomacmarrum357 – an alternative CLI player/recorder for Radio357 patrons
 # Copyright (C) 2024, 2025  macmarrum (at) outlook (dot) ie
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -8,11 +8,12 @@ import json
 import logging.config
 import os
 import re
-import selectors
 import shlex
 import signal
 import subprocess
 import sys
+from hashlib import blake2b
+from textwrap import dedent
 
 try:
     import tomllib
@@ -31,8 +32,13 @@ import aiohttp
 import tomli_w
 import yarl
 from aiohttp import AsyncResolver, CookieJar, web
+try:
+    import aiosqlite
+except ImportError:
+    aiosqlite = None
 
-UTF8 = 'UTF-8'
+UTF8 = 'utf-8'
+SHUTDOWN = object()
 
 macmarrum_log = logging.getLogger('macmarrum357')
 switch_log = logging.getLogger('macmarrum357.switch')
@@ -179,6 +185,7 @@ class c:
     CONCURRENT_QUEUES_LIMIT = 'concurrent_queues_limit'
     RETRY_AFTER = 'Retry-After'
     TOO_MANY_REQUESTS_TEXT = 'Too many requests - the server has reached its maximum global connection capacity'
+    CHUNK_INFO_COLLECTOR_FILENAME = 'chunk_info_collector_filename'
 
 
 class Macmarrum357():
@@ -270,7 +277,13 @@ class Macmarrum357():
         queue_length_limit = self.conf.get(c.QUEUE_LENGTH_LIMIT, self.DEFAULT_QUEUE_LENGTH_LIMIT)
         queue0_byte_size_limit = self.conf.get(c.QUEUE0_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE0_BYTE_SIZE_LIMIT)
         queue_byte_size_limit = self.conf.get(c.QUEUE_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT)
-        self.queue_gen = ((ByteSizedAioQueue(*(queue0_length_limit, queue0_byte_size_limit) if q == 0 else (queue_length_limit, queue_byte_size_limit)), q) for q in range(sys.maxsize))
+        self.chunk_info_collector_queue = None
+        self.chunk_info_collector_filename = self.conf.get(c.CHUNK_INFO_COLLECTOR_FILENAME, None)
+        if self.chunk_info_collector_filename and not aiofiles:
+            macmarrum_log.warning(f"chunk_info_collector_filename: {self.chunk_info_collector_filename!r} but aiofiles isn't installed -> no chunk_info_collector")
+            self.chunk_info_collector_filename = None
+        initial_qs = (0, 1) if self.chunk_info_collector_filename else (0,)  # chunk_info_collector_queue gets q=1
+        self.queue_gen = ((ByteSizedAioQueue(*(queue0_length_limit, queue0_byte_size_limit) if q in initial_qs else (queue_length_limit, queue_byte_size_limit)), q) for q in range(sys.maxsize))
         self._consumer_queues: list[tuple[ByteSizedAioQueue, int]] = []
         self.consumers_length = 0
         self.concurrent_queues_limit = self.conf.get(c.CONCURRENT_QUEUES_LIMIT, self.DEFAULT_CONCURRENT_QUEUES_LIMIT)
@@ -313,10 +326,12 @@ class Macmarrum357():
         try:
             self._consumer_queues.remove((queue, q))
             self.consumers_length -= 1
+            macmarrum_log.debug(f"unregister_stream_consumer - queue #{q}")
             if q == 0:
                 self.is_queue0_registered = False
+                if self.chunk_info_collector_queue:
+                    self.chunk_info_collector_queue.put_nowait(SHUTDOWN)
             self.forever_qs.pop(q, None)
-            macmarrum_log.debug(f"unregister_stream_consumer - queue #{q}")
         except ValueError:
             macmarrum_log.debug(f"unregister_stream_consumer - queue #{q} already unregistered")
 
@@ -352,7 +367,9 @@ class Macmarrum357():
         if self.should_log_in:
             # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
             await self.refresh_token_or_log_in_and_dump_cookies_if_needed(macmarrum_log)
-            asyncio.create_task(self.run_periodic_token_refresh())
+            periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
+        if self.chunk_info_collector_filename:
+            chunk_checksum_collector_task = asyncio.create_task(self.run_chunk_info_collector())
         resp = None
         i = 0
         chunk_num = 0
@@ -629,6 +646,68 @@ class Macmarrum357():
                 logger.critical(msg)
                 raise RuntimeError(msg)
 
+    async def run_chunk_info_collector(self):
+        macmarrum_log.debug(f"run_chunk_info_collector {self.chunk_info_collector_filename!r}")
+        async with aiosqlite.connect(self.chunk_info_collector_filename) as db:
+            await db.execute('PRAGMA foreign_keys = ON')
+            await db.execute(dedent('''\
+                CREATE TABLE IF NOT EXISTS run (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT
+                ) STRICT;'''))
+            await db.execute(dedent('''\
+                CREATE TABLE IF NOT EXISTS chunk (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL REFERENCES run (id),
+                    timestamp REAL NOT NULL,
+                    len INTEGER NOT NULL,
+                    blake2b BLOB NOT NULL,
+                    qsize INTEGER,
+                    qbytesize INTEGER
+                ) STRICT;'''))
+            await db.execute(dedent('''\
+                CREATE VIEW IF NOT EXISTS v_chunk AS
+                SELECT id, run_id, datetime(timestamp, 'unixepoch', 'subsec', 'localtime') localtime, len, qsize, qbytesize, blake2b 
+                FROM chunk;'''))
+            run_id = None
+            async for row in await db.execute('INSERT INTO run DEFAULT VALUES RETURNING id'):
+                run_id = row[0]
+            macmarrum_log.debug(f"run_chunk_info_collector - run_id #{run_id}")
+            await db.commit()
+            # wait for other queues to start first
+            i = 0
+            while True:
+                if not self.is_client_running:
+                    return
+                if not self.is_queue0_registered:
+                    await asyncio.sleep(0)
+                    i += 1
+                else:
+                    macmarrum_log.debug(f"run_chunk_info_collector - waited {i} times for queue #0")
+                    break
+            queue, q = self.register_stream_consumer_to_get_queue()
+            self.chunk_info_collector_queue = queue
+            macmarrum_log.debug(f"run_chunk_info_collector - queue #{q}")
+            while True:
+                try:
+                    chunk = await queue.get()
+                    if chunk is SHUTDOWN:
+                        self.unregister_stream_consumer(queue, q)
+                        break
+                    qsize = queue.qsize()
+                    qbytesize = queue.byte_size
+                except asyncio.CancelledError:
+                    macmarrum_log.debug(f"run_chunk_info_collector - queue #{q} - CancelledError during await queue.get()")
+                    self.unregister_stream_consumer(queue, q)
+                    break
+                else:
+                    try:
+                        timestamp = datetime.now(timezone.utc).timestamp()
+                        await db.execute('INSERT INTO chunk (run_id, timestamp, len, blake2b, qsize, qbytesize) VALUES (?, ?, ?, ?, ?, ?)',
+                                         (run_id, timestamp, len(chunk), blake2b(chunk).digest(), qsize, qbytesize))
+                        await db.commit()
+                    except Exception as e:
+                        macmarrum_log.error(f"run_chunk_info_collector - {type(e).__name__}: {e}")
+
     async def run_periodic_token_refresh(self):
         token_log.info('run_periodic_token_refresh')
 
@@ -740,28 +819,6 @@ class Macmarrum357():
             #     macmarrum_log.debug(f"dump_cookies_if_changed - {morsel.OutputString().replace(morsel.value, '*****')}")
         else:
             macmarrum_log.debug(f"dump_cookies_if_changed - unexpected cookie_jar type: {cookie_jar.__class__.__name__}")
-
-    async def run_chunk_sizes_collector(self):
-        path = None
-        for argv in self.argv:
-            if argv.startswith('--chunk-sizes-file='):
-                path = Path(argv.split('=')[1]).expanduser()
-                break
-        if not path:
-            return
-        while not self.consumers_length:
-            await asyncio.sleep(1)
-        queue, q = self.register_stream_consumer_to_get_queue()
-        macmarrum_log.debug(f"run_chunk_sizes_collector - queue #{q} -> {path}")
-        async with aiofiles.open(path, 'w', encoding='L1') as fo:
-            while self.is_client_running:
-                try:
-                    chunk = await asyncio.wait_for(queue.get(), self.QUEUE_EMPTY_TIMEOUT_SEC)
-                    await fo.write(f"{len(chunk)}\n")
-                except (TimeoutError, asyncio.CancelledError, IOError) as e:
-                    macmarrum_log.debug(f"run_chunk_sizes_collector - queue #{q} - {type(e).__name__} {e}")
-                    self.unregister_stream_consumer(queue, q)
-                    break
 
     async def handle_request_live(self, request: web.Request):
         handle_request = 'handle_request_live'
@@ -1121,6 +1178,9 @@ class ByteSizedAioQueue():
     def byte_size(self):
         return self._byte_size
 
+    def qsize(self):
+        return self._queue.qsize()
+
 
 def sleep_if_requested(argv: list[str]):
     for arg in argv:
@@ -1188,9 +1248,7 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     port = app[c.MACMARRUM357_PORT]
     spawn_player_if_requested(macmarrum357, host, port)
     shutdown_task = asyncio.create_task(shutdown_app_when_no_consumers(macmarrum357))
-    chunk_sizes_task = asyncio.create_task(macmarrum357.run_chunk_sizes_collector())
     yield
-    chunk_sizes_task.cancel()
     if recorder_kwargs:
         live_stream_recorder_task.cancel()
     live_stream_client_task.cancel()
