@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 # aiomacmarrum357 – an alternative CLI player/recorder for Radio357 patrons
-# Copyright (C) 2024, 2025  macmarrum (at) outlook (dot) ie
+# Copyright (C) 2024-2026  macmarrum (at) outlook (dot) ie
 # SPDX-License-Identifier: GPL-3.0-or-later
 import asyncio
+import atexit
 import email.utils
 import json
+import locale
 import logging.config
+import logging.handlers
 import os
+import queue
 import re
 import shlex
 import signal
@@ -32,11 +36,13 @@ import aiohttp
 import tomli_w
 import yarl
 from aiohttp import AsyncResolver, CookieJar, web
+
 try:
     import aiosqlite
 except ImportError:
     aiosqlite = None
 
+PROG = 'macmarrum357'
 UTF8 = 'utf-8'
 SHUTDOWN = object()
 
@@ -46,24 +52,41 @@ token_log = logging.getLogger('macmarrum357.token')
 web_log = logging.getLogger('macmarrum357.web')
 recorder_log = logging.getLogger('macmarrum357.recorder')
 
+log_queue = queue.SimpleQueue()
 
-def get_appdata() -> Path:
+
+def queue_handler_factory():
+    return logging.handlers.QueueHandler(log_queue)
+
+
+def get_app_config_dir(app_name: str | None = None, /, as_path=False) -> str | Path:
+    app_name = app_name or PROG
     if os.name == 'nt':
-        return Path(os.environ['APPDATA'])
+        config_dir = Path(os.environ['APPDATA'])
     elif os.name == 'posix':
-        return Path(os.environ.get('XDG_CONFIG_HOME', '~/.config')).expanduser()
+        config_dir = Path(os.environ.get('XDG_CONFIG_HOME', '~/.config')).expanduser()
     else:
-        raise RuntimeError(f"unknown os.name: {os.name}")
+        raise RuntimeError(f"Unsupported os.name: {os.name}")
+    app_config_dir = config_dir / app_name
+    return app_config_dir if as_path else str(app_config_dir)
 
 
-macmarrum357_path = get_appdata() / 'macmarrum357'
-macmarrum357_path.mkdir(exist_ok=True)
-logging_toml_path = macmarrum357_path / 'logging.toml'
-for arg in sys.argv:
-    if arg.startswith('--logging-toml-path='):
-        logging_toml_path = Path(arg.removeprefix('--logging-toml-path=')).expanduser()
+def get_app_local_dir(app_name: str | None = None, /, as_path=False) -> str | Path:
+    app_name = app_name or PROG
+    if os.name == 'nt':
+        local_dir = Path(os.environ['LOCALAPPDATA'])
+    elif os.name == 'posix':
+        local_dir = Path(os.environ.get('XDG_DATA_HOME', '~/.local/share')).expanduser()
+    else:
+        raise RuntimeError(f"Unsupported os.name: {os.name}")
+    app_local_dir = local_dir / app_name
+    return app_local_dir if as_path else str(app_local_dir)
 
-LOGGING_CONFIG_DEFAULT = {
+
+app_config_dir_path: Path = get_app_config_dir(as_path=True)
+app_config_dir_path.mkdir(exist_ok=True)
+
+DEFAULT_LOGGING_CONFIG = {
     "version": 1,
     "formatters": {
         "formatter": {
@@ -79,40 +102,69 @@ LOGGING_CONFIG_DEFAULT = {
         },
         "to_file": {
             "class": "logging.FileHandler",
-            "filename": "macmarrum357.log",
+            "filename": f"<app-local-dir>/logs/{PROG}~<current_date|+%Y-%m-%d>.log",
             "encoding": "UTF-8",
             "formatter": "formatter"
-        }
+        },
+        "to_queue": {
+            "()": "__main__.queue_handler_factory"
+        },
     },
     "loggers": {
         "macmarrum357": {
+            "handlers": ["to_queue"],
+            "propagate": False,
             "level": "INFO",
-            "handlers": [
-                "to_console",
-                "to_file"
-            ]
         },
         "aiohttp": {
+            "handlers": ["to_queue"],
+            "propagate": False,
             "level": "INFO",
+        },
+        "root": {
             "handlers": [
-                "to_console",
-                "to_file"
-            ]
+                "to_console",  # technical entry — will be removed in code
+                "to_file",  # technical entry — will be removed in code
+                "to_queue",
+            ],
         },
     }
 }
 
 
-def configure_logging():
+def load_logging_conf_dct(logging_toml_fspath: os.PathLike | str):
     try:
-        with logging_toml_path.open('rb') as fi:
-            dict_config = tomllib.load(fi)
+        with open(logging_toml_fspath, 'rb') as fi:
+            logging_conf_dct = tomllib.load(fi)
     except FileNotFoundError:
-        dict_config = LOGGING_CONFIG_DEFAULT
-        with logging_toml_path.open('wb') as fo:
-            tomli_w.dump(LOGGING_CONFIG_DEFAULT, fo)
-    logging.config.dictConfig(dict_config)
-    macmarrum_log.debug(f"configure_logging: {dict_config}")
+        # import sys; print(f"File not found: {logging_toml_fspath!r} — using default logging config", file=sys.stderr)
+        logging_conf_dct = DEFAULT_LOGGING_CONFIG
+    _expand_handler_filename(logging_conf_dct)
+    return logging_conf_dct
+
+
+def configure_logging_and_get_handlers_for_listener(logging_conf_dct: dict) -> list[logging.Handler]:
+    logging.config.dictConfig(logging_conf_dct)
+    root_log = logging.getLogger('root')
+    handlers_for_listener = [h for h in root_log.handlers if not isinstance(h, logging.handlers.QueueHandler)]
+    for h in handlers_for_listener:
+        root_log.removeHandler(h)
+    return handlers_for_listener
+
+
+def configure_logging_and_get_listener(logging_toml_fspath: os.PathLike | str):
+    """Combines all three steps"""
+    logging_conf_dct = load_logging_conf_dct(logging_toml_fspath)
+    handlers_for_listener = configure_logging_and_get_handlers_for_listener(logging_conf_dct)
+    return logging.handlers.QueueListener(log_queue, *handlers_for_listener, respect_handler_level=True)
+
+
+def _expand_handler_filename(logging_conf_dict: dict):
+    for _, dct in logging_conf_dict.get('handlers', {}).items():
+        if filename := dct.get('filename'):
+            filename_path = Path(Template(filename).substitute()).expanduser()
+            filename_path.parent.mkdir(parents=True, exist_ok=True)
+            dct['filename'] = str(filename_path)
 
 
 def mk_filename(start: datetime, end: datetime, duration: timedelta, file_num: int, count: int, suffix: str):
@@ -252,8 +304,8 @@ class Macmarrum357():
     RETRY_AFTER_HEADERS = {c.RETRY_AFTER: '300'}  # note: seconds as string - sent with status code 429
     QUEUE_EMPTY_TIMEOUT_SEC = 5.0  # when handling a http request, how long to wait for the next chunk before giving up
     ITER_FILE_CHUNK_SIZE = 8 * 1024
-    config_toml_path = macmarrum357_path / 'config.toml'
-    aiohttp_cookiejar_pickle_path = macmarrum357_path / 'aiohttp_cookiejar.pickle'
+    config_toml_path = app_config_dir_path / 'config.toml'
+    aiohttp_cookiejar_pickle_path = app_config_dir_path / 'aiohttp_cookiejar.pickle'
     OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
     CONTENT_TYPE_TO_SUFFIX = {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3', c.APPLICATION_OCTET_STREAM: '.bin'}
@@ -1182,6 +1234,72 @@ class ByteSizedAioQueue():
         return self._queue.qsize()
 
 
+class Template:
+    # Pattern to match <placeholder> or <placeholder|format|locale>
+    pattern = re.compile(r'<(?P<placeholder>[a-z_-]+)(?:\|(?P<format>[^|>]+)(?:\|(?P<locale>[^>]+))?)?>')
+
+    def __init__(self, template: str):
+        self._template = template
+        self._config = None
+        self._extraction_r = None
+        self._now = None
+        self._placeholder = None
+        self._format_spec = None
+        self._locale = None
+
+    def substitute(self, now: datetime | None = None, encode_fspath=False) -> str:
+        self._now = now
+
+        def replacer(match):
+            gd = match.groupdict()
+            self._placeholder = gd.get('placeholder')
+            self._method = gd.get('method')
+            self._format_spec = gd.get('format')
+            self._locale = gd.get('locale')
+            match self._placeholder:
+                case 'current_date':
+                    current_date = self._compute_current_date()
+                    return encode_fspath(current_date) if encode_fspath else current_date
+                case 'app-config-dir':
+                    return get_app_config_dir()
+                case 'app-local-dir':
+                    return get_app_local_dir()
+            return match.group(0)  # Return unchanged if placeholder not recognized
+
+        return self.pattern.sub(replacer, self._template)
+
+    def _compute_current_date(self) -> str:
+        now = self._now or datetime.now().astimezone()
+        fmt = self._format_spec or '%Y-%m-%d %H-%M-%S'
+        loc = self._locale
+        if fmt.startswith('+'):  # e.g. '+%Y-%m-%d'
+            fmt = fmt[1:]
+        if loc and '.' not in loc:
+            loc = f"{loc}.UTF-8"
+        try:
+            if loc:
+                old_loc = locale.getlocale(locale.LC_TIME)
+                locale.setlocale(locale.LC_TIME, loc)
+            current_date = now.strftime(fmt)
+            if loc:
+                locale.setlocale(locale.LC_TIME, old_loc)
+        except Exception as e:
+            macmarrum_log.warning(f"⚠️ {type(e).__module__}.{type(e).__qualname__}: {e}")
+            current_date = f"{e}"
+        return current_date
+
+
+def encode_fspath(name: str) -> str:
+    """Replaces illegal characters in a sheet name with their url-encoded equivalents."""
+    # illegal_sheet_name_chars = '/\\:?*[]'
+    # remaining = ';"<>|'
+    illegal_chars = '/\\:;?*"<>|'
+    encoded_name = name.replace('\0', '[NUL]')
+    for char in illegal_chars:
+        encoded_name = encoded_name.replace(char, f"%{ord(char):02X}")
+    return encoded_name
+
+
 def sleep_if_requested(argv: list[str]):
     for arg in argv:
         if arg.startswith('--sleep='):
@@ -1265,25 +1383,36 @@ def main(argv: list[str] = None):
     # https://docs.aiohttp.org/en/stable/web_advanced.html#background-tasks
     if argv is None:
         argv = sys.argv
-    configure_logging()
-    sleep_if_requested(argv)
-    recorder_kwargs = get_recorder_kwargs(argv)
-    macmarrum357 = Macmarrum357(argv, recorder_kwargs)
-    live_stream_server_app = web.Application()
-    live_stream_server_app[c.MACMARRUM357] = macmarrum357
-    live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
-    live_stream_server_app.add_routes([
-        web.get('/live', macmarrum357.handle_request_live),
-        web.get('/file-then-live', macmarrum357.handle_request_file_then_live)
-    ])
-    host = macmarrum357.conf.get(c.HOST, 'localhost')
-    port = macmarrum357.conf.get(c.PORT, 8357)
-    live_stream_server_app[c.MACMARRUM357_HOST] = host
-    live_stream_server_app[c.MACMARRUM357_PORT] = port
-    if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
-        # aiodns requires SelectorEventLoop on Windows: https://github.com/aio-libs/aiodns/issues/78
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines)
+    logging_toml_path = app_config_dir_path / 'logging.toml'
+    for arg in argv:
+        if arg.startswith('--logging-toml-path='):
+            logging_toml_path = Path(arg.removeprefix('--logging-toml-path=')).expanduser()
+    queue_listener = configure_logging_and_get_listener(logging_toml_path)
+    queue_listener.start()
+    atexit.register(queue_listener.stop)
+    try:
+        sleep_if_requested(argv)
+        recorder_kwargs = get_recorder_kwargs(argv)
+        macmarrum357 = Macmarrum357(argv, recorder_kwargs)
+        live_stream_server_app = web.Application()
+        live_stream_server_app[c.MACMARRUM357] = macmarrum357
+        live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
+        live_stream_server_app.add_routes([
+            web.get('/live', macmarrum357.handle_request_live),
+            web.get('/file-then-live', macmarrum357.handle_request_file_then_live)
+        ])
+        host = macmarrum357.conf.get(c.HOST, 'localhost')
+        port = macmarrum357.conf.get(c.PORT, 8357)
+        live_stream_server_app[c.MACMARRUM357_HOST] = host
+        live_stream_server_app[c.MACMARRUM357_PORT] = port
+        if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
+            # aiodns requires SelectorEventLoop on Windows: https://github.com/aio-libs/aiodns/issues/78
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines)
+    except Exception as e:
+        macmarrum_log.critical(f"{type(e).__module__}.{type(e).__qualname__}: {e}")
+        macmarrum_log.debug('', exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == '__main__':
