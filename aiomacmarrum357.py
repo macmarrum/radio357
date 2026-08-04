@@ -561,6 +561,9 @@ class Macmarrum357():
         return timeout
 
     def mk_cookie_jar(self):
+        if not self.should_log_in:
+            macmarrum_log.debug(f"mk_cookie_jar - should_log_in: {self.should_log_in} => None")
+            return None
         cookie_jar = CookieJar()
         exists = self.aiohttp_cookiejar_pickle_path.exists()
         macmarrum_log.debug(f"mk_cookie_jar - from {self.aiohttp_cookiejar_pickle_path.name}: {exists}")
