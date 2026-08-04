@@ -1362,12 +1362,12 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     a code before yield is an initialization stage (called on startup), a code after yield is executed on cleanup.
     """
     macmarrum357: Macmarrum357 = app[c.MACMARRUM357]
-    live_stream_client_task = asyncio.create_task(macmarrum357.run_client())
-    if recorder_kwargs := macmarrum357.recorder_kwargs:
-        live_stream_recorder_task = asyncio.create_task(macmarrum357.run_recorder(**recorder_kwargs))
     host = app[c.MACMARRUM357_HOST]
     port = app[c.MACMARRUM357_PORT]
     spawn_player_if_requested(macmarrum357, host, port)
+    live_stream_client_task = asyncio.create_task(macmarrum357.run_client())
+    if recorder_kwargs := macmarrum357.recorder_kwargs:
+        live_stream_recorder_task = asyncio.create_task(macmarrum357.run_recorder(**recorder_kwargs))
     shutdown_task = asyncio.create_task(shutdown_app_when_no_consumers(macmarrum357))
     yield
     if recorder_kwargs:
