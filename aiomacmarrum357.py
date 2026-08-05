@@ -18,6 +18,7 @@ import subprocess
 import sys
 from hashlib import blake2b
 from textwrap import dedent
+from zoneinfo import ZoneInfo
 
 try:
     import tomllib
@@ -187,6 +188,7 @@ class c:
     MACMARRUM357 = 'macmarrum357'
     MACMARRUM357_HOST = 'macmarrum357.host'
     MACMARRUM357_PORT = 'macmarrum357.port'
+    FILENAME_TIMEZONE = 'filename_timezone'
     LIVE_STREAM_URL = 'live_stream_url'
     LIVE_STREAM_LOCATION_REPLACEMENTS = 'live_stream_location_replacements'
     LOG_IN = 'log_in'
@@ -348,6 +350,7 @@ class Macmarrum357():
         self.is_distribute_to_consumers_initial_run = True
         self.is_queue0_registered = False
         self.forever_qs = {}
+        self.filename_timezone = self.conf.get(c.FILENAME_TIMEZONE)
 
     @staticmethod
     def validate_that_consumers_were_requested(argv: list[str]):
@@ -622,27 +625,29 @@ class Macmarrum357():
                 recorder_log.debug(f"close self.fo - queue #{q}")
                 await self.fo.close()
 
-    @classmethod
-    async def start_output_file(cls, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int, suffix: str):
+    async def start_output_file(self, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int, suffix: str):
         file_num, start, end, duration = next(switch_file_datetime_iterator)
-        output_path = Path(output_dir) / filename(start=start, end=end, duration=duration, file_num=file_num,
+        filename_tzinfo = ZoneInfo(self.filename_timezone) if self.filename_timezone else None
+        filename_start = start.astimezone(filename_tzinfo)
+        filename_end = end.astimezone(filename_tzinfo)
+        output_path = Path(output_dir) / filename(start=filename_start, end=filename_end, duration=duration, file_num=file_num,
                                                   count=count, suffix=suffix) if callable(filename) else filename
         is_filename_changed = False
-        while 'a' not in cls.OUTPUT_FILE_MODE and output_path.exists():
+        while 'a' not in self.OUTPUT_FILE_MODE and output_path.exists():
             old_path = output_path
             stem = output_path.stem
-            m = cls.RX_TILDA_NUM.search(stem)
+            m = self.RX_TILDA_NUM.search(stem)
             if m:
                 num = int(m.group(0))
-                new_stem = cls.RX_TILDA_NUM.sub(str(num + 1), stem)
+                new_stem = self.RX_TILDA_NUM.sub(str(num + 1), stem)
             else:
                 new_stem = f"{stem}~1"
             output_path = output_path.with_stem(new_stem)
             recorder_log.warning(f"change filename to {new_stem}{output_path.suffix}: file exists {old_path}")
             is_filename_changed = True
-        if not is_filename_changed and 'a' in cls.OUTPUT_FILE_MODE and output_path.exists():
+        if not is_filename_changed and 'a' in self.OUTPUT_FILE_MODE and output_path.exists():
             recorder_log.warning(f"append to an exiting file - {output_path}")
-        fo = await aiofiles.open(output_path, cls.OUTPUT_FILE_MODE)
+        fo = await aiofiles.open(output_path, self.OUTPUT_FILE_MODE)
         return output_path, fo, file_num, end, duration
 
     @staticmethod
