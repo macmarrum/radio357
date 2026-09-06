@@ -16,6 +16,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass, fields, asdict, field
 from hashlib import blake2b
 from textwrap import dedent
 from zoneinfo import ZoneInfo
@@ -30,7 +31,7 @@ from datetime import datetime, timezone, timedelta
 from http.cookies import SimpleCookie
 from pathlib import Path
 from time import time, monotonic, sleep
-from typing import Callable
+from typing import Callable, ClassVar
 
 import aiofiles
 import aiohttp
@@ -188,13 +189,10 @@ class c:
     MACMARRUM357 = 'macmarrum357'
     MACMARRUM357_HOST = 'macmarrum357.host'
     MACMARRUM357_PORT = 'macmarrum357.port'
-    FILENAME_TIMEZONE = 'filename_timezone'
     LIVE_STREAM_URL = 'live_stream_url'
-    LIVE_STREAM_LOCATION_REPLACEMENTS = 'live_stream_location_replacements'
     LOG_IN = 'log_in'
     EMAIL = 'email'
     PASSWORD = 'password'
-    NAMESERVERS = 'nameservers'
     USER_AGENT = 'User-Agent'
     AUTHORIZATION = 'Authorization'
     BEARER = 'Bearer'
@@ -225,21 +223,100 @@ class c:
     ICY_TITLE = 'icy_title'
     ICY_METADATA = 'Icy-MetaData'
     ICY_METAINT = 'icy-metaint'
-    HOST = 'host'
-    PORT = 'port'
-    HANDLER_START_BUFFER_SEC = 'handler_start_buffer_sec'
     ZERO_AS_BYTES = b'\x00'
     FOREVER = 'forever'
     RECORD_ = '--record='
     PLAY_WITH_ = '--play-with='
-    QUEUE0_LENGTH_LIMIT = 'queue0_length_limit'
-    QUEUE_LENGTH_LIMIT = 'queue_length_limit'
-    QUEUE0_BYTE_SIZE_LIMIT = 'queue0_byte_size_limit'
-    QUEUE_BYTE_SIZE_LIMIT = 'queue_byte_size_limit'
-    CONCURRENT_QUEUES_LIMIT = 'concurrent_queues_limit'
     RETRY_AFTER = 'Retry-After'
     TOO_MANY_REQUESTS_TEXT = 'Too many requests - the server has reached its maximum global connection capacity'
-    CHUNK_INFO_COLLECTOR_FILENAME = 'chunk_info_collector_filename'
+
+
+@dataclass
+class DictLike:
+    def __getitem__(self, key):
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(f"{key} not found in {self.__class__.__name__}")
+
+    def __setitem__(self, key, value):
+        if hasattr(self, key):
+            setattr(self, key, value)
+        else:
+            raise KeyError(f"{key} not found in {self.__class__.__name__}")
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+    def values(self):
+        return (getattr(self, f.name) for f in fields(self))
+
+    def as_dict(self) -> dict:
+        result = {}
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, DictLike):
+                # Check if the subclass has overridden as_dict()
+                if type(value).as_dict is not DictLike.as_dict:
+                    result[f.name] = value.as_dict()
+                else:
+                    result[f.name] = asdict(value)
+            else:
+                result[f.name] = value
+        return result
+
+
+REDCDN_LIVE_NO_PREROLL: ClassVar[str] = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
+
+
+@dataclass
+class Settings(DictLike):
+    TOML_PATH: ClassVar[Path] = app_config_dir_path / 'config.toml'
+    live_stream_url: str = 'https://stream.radio357.pl/?s=www'
+    log_in: bool = True
+    email: str = ''
+    password: str = ''
+    icy_title: bool = True
+    filename_timezone: str | None = None
+    nameservers: list[str] | None = None
+    host: str = 'localhost'
+    port: int = 8357
+    user_agent: str | None = None
+    player_args: list[str] | tuple[str] = ('mpv', '--force-window=immediate', '--fs=no')
+    handler_start_buffer_sec: float = 0.0
+    # with icy_title enabled, I can see icy_metaint: 16000
+    # in the mp3 stream, 418 is the most common chunk size I've observed
+    # in the aac stream, ~800
+    queue0_length_limit: int = 0  # 2400  # limit on the count of chunks in a queue - 0 means unlimited
+    queue_length_limit: int = 0  # 200  # limit on the count of chunks in a queue - 0 means unlimited
+    queue0_byte_size_limit: int = 960_000  # (~60 sec) limit on size (in bytes) of all chunks in queue #0 - usually for writing to disk
+    queue_byte_size_limit: int = 80_000  # (~5 sec) limit on size (in bytes) of all chunks in a subsequent queue (where # > 0)
+    concurrent_queues_limit: int = 1_000  # limit on the number of concurrent consumers, post which status code 429 is sent
+    chunk_info_collector_filename: str | None = None
+    live_stream_location_replacements: dict[str, str] = field(default_factory=lambda: {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'})
+
+    @classmethod
+    def from_toml(cls):
+        with cls.TOML_PATH.open('rb') as fi:
+            conf = tomllib.load(fi)
+        obfuscated_conf = conf.copy()
+        for k, v in obfuscated_conf.items():
+            if k in [c.EMAIL, c.PASSWORD] and v:
+                obfuscated_conf[k] = '*****'
+        macmarrum_log.debug(f"load_config - {cls.TOML_PATH.name} - {obfuscated_conf}")
+        if conf.get(c.LOG_IN, True) and (not conf.get(c.EMAIL) or not conf.get(c.PASSWORD)):
+            macmarrum_log.critical(f"{cls.TOML_PATH} is missing email and/or password values")
+            sys.exit(f"brak email i/lub password w {cls.TOML_PATH}")
+        return cls(**conf)
+
+    @classmethod
+    def write_minimal_toml(cls):
+        with cls.TOML_PATH.open('wb') as fo:
+            conf = {c.LOG_IN: cls.log_in, c.EMAIL: cls.email, c.PASSWORD: cls.password,
+                    c.LIVE_STREAM_URL: cls.live_stream_url,
+                    c.ICY_TITLE: cls.icy_title,
+                    c.PLAYER_ARGS: cls.player_args,
+                    }
+            tomli_w.dump(conf, fo)
 
 
 class Macmarrum357():
@@ -283,30 +360,17 @@ class Macmarrum357():
     Additionally, to enable icy-title in the /live stream (if your player supports it, like **mpv**), set:
     `icy_title = True`
     """
-    STREAM = 'https://stream.radio357.pl/?s=www'
-    REDCDN_LIVE_NO_PREROLL = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
-    DEFAULT_LOCATION_REPLACEMENTS = {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
     USER_AGENT = f"macmarrum/357 {aiohttp.http.SERVER_SOFTWARE}"
     UA_HEADERS = {c.USER_AGENT: USER_AGENT}
     AE_HEADERS = {c.ACCEPT: f"{c.AUDIO_AAC},{c.AUDIO_MPEG}", c.ACCEPT_ENCODING: c.IDENTITY}
     ACCEPT_JSON_HEADERS = {c.ACCEPT: c.APPLICATION_JSON}
     TOKEN_VALIDITY_DELTA = timedelta(minutes=60)
     ITER_CHUNKED_UP_TO_SIZE = 4 * 1024
-    HANDLER_START_BUFFER_SEC = 0
     CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER = 222
     CONSUMER_CONTENT_TYPE_WAIT_SEC = 0.1
-    # with icy_title enabled, I can see icy_metaint: 16000
-    # in the mp3 stream, 418 is the most common chunk size I've observed
-    # in the aac stream, ~800
-    DEFAULT_QUEUE0_LENGTH_LIMIT = 0  # 2400  # limit on the count of chunks in a queue - 0 means unlimited
-    DEFAULT_QUEUE_LENGTH_LIMIT = 0  # 200  # limit on the count of chunks in a queue - 0 means unlimited
-    DEFAULT_QUEUE0_BYTE_SIZE_LIMIT = 960_000  # (~60 sec) limit on size (in bytes) of all chunks in queue #0 - usually for writing to disk
-    DEFAULT_QUEUE_BYTE_SIZE_LIMIT = 80_000  # (~5 sec) limit on size (in bytes) of all chunks in a subsequent queue (where # > 0)
-    DEFAULT_CONCURRENT_QUEUES_LIMIT = 1_000  # limit on the number of concurrent consumers, post which status code 429 is sent
     RETRY_AFTER_HEADERS = {c.RETRY_AFTER: '300'}  # note: seconds as string - sent with status code 429
     QUEUE_EMPTY_TIMEOUT_SEC = 5.0  # when handling a http request, how long to wait for the next chunk before giving up
     ITER_FILE_CHUNK_SIZE = 8 * 1024
-    config_toml_path = app_config_dir_path / 'config.toml'
     aiohttp_cookiejar_pickle_path = app_config_dir_path / 'aiohttp_cookiejar.pickle'
     OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
@@ -320,19 +384,18 @@ class Macmarrum357():
         self.recorder_kwargs = recorder_kwargs
         macmarrum_log.info('START Macmarrum357')
         self.validate_that_consumers_were_requested(argv)
-        self.conf = {}
-        self.load_config()
-        self.should_log_in = self.conf.get(c.LOG_IN, True)
+        self.conf = self.load_config()
+        self.should_log_in = self.conf.log_in
         self.is_cookies_changed = False
         self.is_client_running = False
         self.session: aiohttp.ClientSession = None
-        self.location_replacements = self.conf.get(c.LIVE_STREAM_LOCATION_REPLACEMENTS, self.DEFAULT_LOCATION_REPLACEMENTS)
-        queue0_length_limit = self.conf.get(c.QUEUE0_LENGTH_LIMIT, self.DEFAULT_QUEUE0_LENGTH_LIMIT)
-        queue_length_limit = self.conf.get(c.QUEUE_LENGTH_LIMIT, self.DEFAULT_QUEUE_LENGTH_LIMIT)
-        queue0_byte_size_limit = self.conf.get(c.QUEUE0_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE0_BYTE_SIZE_LIMIT)
-        queue_byte_size_limit = self.conf.get(c.QUEUE_BYTE_SIZE_LIMIT, self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT)
+        self.location_replacements = self.conf.live_stream_location_replacements
+        queue0_length_limit = self.conf.queue0_length_limit
+        queue_length_limit = self.conf.queue_length_limit
+        queue0_byte_size_limit = self.conf.queue0_byte_size_limit
+        queue_byte_size_limit = self.conf.queue_byte_size_limit
         self.chunk_info_collector_queue = None
-        self.chunk_info_collector_filename = self.conf.get(c.CHUNK_INFO_COLLECTOR_FILENAME, None)
+        self.chunk_info_collector_filename = self.conf.chunk_info_collector_filename
         if self.chunk_info_collector_filename and not aiofiles:
             macmarrum_log.warning(f"chunk_info_collector_filename: {self.chunk_info_collector_filename!r} but aiofiles isn't installed -> no chunk_info_collector")
             self.chunk_info_collector_filename = None
@@ -340,7 +403,7 @@ class Macmarrum357():
         self.queue_gen = ((ByteSizedAioQueue(*(queue0_length_limit, queue0_byte_size_limit) if q in initial_qs else (queue_length_limit, queue_byte_size_limit)), q) for q in range(sys.maxsize))
         self._consumer_queues: list[tuple[ByteSizedAioQueue, int]] = []
         self.consumers_length = 0
-        self.concurrent_queues_limit = self.conf.get(c.CONCURRENT_QUEUES_LIMIT, self.DEFAULT_CONCURRENT_QUEUES_LIMIT)
+        self.concurrent_queues_limit = self.conf.concurrent_queues_limit
         self.fo = None
         self.file_path: Path = None
         self.content_type = None
@@ -350,7 +413,7 @@ class Macmarrum357():
         self.is_distribute_to_consumers_initial_run = True
         self.is_queue0_registered = False
         self.forever_qs = {}
-        self.filename_timezone = self.conf.get(c.FILENAME_TIMEZONE)
+        self.filename_timezone = self.conf.filename_timezone
 
     @staticmethod
     def validate_that_consumers_were_requested(argv: list[str]):
@@ -391,30 +454,9 @@ class Macmarrum357():
             macmarrum_log.debug(f"unregister_stream_consumer - queue #{q} already unregistered")
 
     def load_config(self):
-        if not self.config_toml_path.exists():
-            with self.config_toml_path.open('wb') as fo:
-                conf = {c.LOG_IN: True, c.EMAIL: '', c.PASSWORD: '',
-                        c.LIVE_STREAM_URL: self.STREAM,
-                        # c.LIVE_STREAM_LOCATION_REPLACEMENTS: self.LOCATION_REPLACEMENTS,
-                        c.ICY_TITLE: True,
-                        c.PLAYER_ARGS: ['mpv', '--force-window=immediate', '--fs=no'],
-                        # c.QUEUE0_BYTE_SIZE_LIMIT: self.DEFAULT_QUEUE0_BYTE_SIZE_LIMIT,
-                        # c.QUEUE_BYTE_SIZE_LIMIT: self.DEFAULT_QUEUE_BYTE_SIZE_LIMIT,
-                        # c.CONCURRENT_QUEUES_LIMIT: self.DEFAULT_CONCURRENT_QUEUES_LIMIT,
-                        }
-                tomli_w.dump(conf, fo)
-        else:
-            with self.config_toml_path.open('rb') as fi:
-                conf = tomllib.load(fi)
-            obfuscated_conf = conf.copy()
-            for k, v in obfuscated_conf.items():
-                if k in [c.EMAIL, c.PASSWORD] and v:
-                    obfuscated_conf[k] = '*****'
-            macmarrum_log.debug(f"load_config - {self.config_toml_path.name} - {obfuscated_conf}")
-        if conf.get(c.LOG_IN, True) and (not conf.get(c.EMAIL) or not conf.get(c.PASSWORD)):
-            macmarrum_log.critical(f"{self.config_toml_path} is missing email and/or password values")
-            sys.exit(f"brak email i/lub password w {self.config_toml_path}")
-        self.conf = conf
+        if not Settings.TOML_PATH.exists():
+            Settings.write_minimal_toml()
+        return Settings.from_toml()
 
     async def run_client(self):
         self.is_client_running = True
@@ -429,10 +471,10 @@ class Macmarrum357():
         i = 0
         chunk_num = 0
         headers = self.UA_HEADERS | self.AE_HEADERS
-        if self.conf.get(c.ICY_TITLE) is True:
+        if self.conf.icy_title is True:
             headers |= {c.ICY_METADATA: '1'}
         while True:
-            url = self.conf.get(c.LIVE_STREAM_URL, self.STREAM)
+            url = self.conf.live_stream_url
             try:
                 macmarrum_log.debug(f"GET {url} - {headers}")
                 while True:  # handle redirects
@@ -543,7 +585,7 @@ class Macmarrum357():
         # fdns bug affecting aiohttp: https://github.com/netblue30/fdns/issues/47
         # workaround: use different name server(s)
         # https://docs.aiohttp.org/en/stable/client_advanced.html#resolving-using-custom-nameservers
-        if nameservers := self.conf.get(c.NAMESERVERS):
+        if nameservers := self.conf.nameservers:
             try:
                 resolver = AsyncResolver(nameservers=nameservers)
                 connector = aiohttp.TCPConnector(resolver=resolver)
@@ -905,7 +947,7 @@ class Macmarrum357():
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
         buffer = bytearray()
-        handler_start_buffer_sec = self.conf.get(c.HANDLER_START_BUFFER_SEC, self.HANDLER_START_BUFFER_SEC)
+        handler_start_buffer_sec = self.conf.handler_start_buffer_sec
         if handler_start_buffer_sec:
             i = 0
             t = monotonic()
@@ -982,7 +1024,7 @@ class Macmarrum357():
             web_log.debug(f"{handle_request} => 429 Too Many Requests (globally)")
             return web.Response(status=429, headers=self.RETRY_AFTER_HEADERS, text=c.TOO_MANY_REQUESTS_TEXT)
         buffer = b''
-        handler_start_buffer_sec = self.conf.get(c.HANDLER_START_BUFFER_SEC, self.HANDLER_START_BUFFER_SEC)
+        handler_start_buffer_sec = self.conf.handler_start_buffer_sec
         if not is_file_path and handler_start_buffer_sec:
             i = 0
             t = monotonic()
@@ -1337,7 +1379,7 @@ def spawn_player_if_requested(macmarrum357, host, port):
                 player_args = [player_args]
             break
         elif arg == '--play':
-            if not (player_args := macmarrum357.conf.get(c.PLAYER_ARGS)):
+            if not (player_args := macmarrum357.conf.player_args):
                 macmarrum_log.error(f"spawn_player - `--play` requested but no {c.PLAYER_ARGS} in config")
             break
     else:  # no break
@@ -1409,11 +1451,11 @@ def main(argv: list[str] = None):
             web.get('/live', macmarrum357.handle_request_live),
             web.get('/file-then-live', macmarrum357.handle_request_file_then_live)
         ])
-        host = macmarrum357.conf.get(c.HOST, 'localhost')
-        port = macmarrum357.conf.get(c.PORT, 8357)
+        host = macmarrum357.conf.host
+        port = macmarrum357.conf.port
         live_stream_server_app[c.MACMARRUM357_HOST] = host
         live_stream_server_app[c.MACMARRUM357_PORT] = port
-        if macmarrum357.conf.get(c.NAMESERVERS) and os.name == 'nt':
+        if macmarrum357.conf.nameservers and os.name == 'nt':
             # aiodns requires SelectorEventLoop on Windows: https://github.com/aio-libs/aiodns/issues/78
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines)
