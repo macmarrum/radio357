@@ -231,45 +231,11 @@ class c:
     TOO_MANY_REQUESTS_TEXT = 'Too many requests - the server has reached its maximum global connection capacity'
 
 
-@dataclass
-class DictLike:
-    def __getitem__(self, key):
-        if hasattr(self, key):
-            return getattr(self, key)
-        raise KeyError(f"{key} not found in {self.__class__.__name__}")
-
-    def __setitem__(self, key, value):
-        if hasattr(self, key):
-            setattr(self, key, value)
-        else:
-            raise KeyError(f"{key} not found in {self.__class__.__name__}")
-
-    def get(self, key, default=None):
-        return getattr(self, key, default)
-
-    def values(self):
-        return (getattr(self, f.name) for f in fields(self))
-
-    def as_dict(self) -> dict:
-        result = {}
-        for f in fields(self):
-            value = getattr(self, f.name)
-            if isinstance(value, DictLike):
-                # Check if the subclass has overridden as_dict()
-                if type(value).as_dict is not DictLike.as_dict:
-                    result[f.name] = value.as_dict()
-                else:
-                    result[f.name] = asdict(value)
-            else:
-                result[f.name] = value
-        return result
-
-
 REDCDN_LIVE_NO_PREROLL: ClassVar[str] = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
 
 
 @dataclass
-class Settings(DictLike):
+class Settings:
     TOML_PATH: ClassVar[Path] = app_config_dir_path / 'config.toml'
     live_stream_url: str = 'https://stream.radio357.pl/?s=www'
     log_in: bool = True
