@@ -16,6 +16,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, fields, asdict, field
 from hashlib import blake2b
 from textwrap import dedent
@@ -340,7 +341,7 @@ class Macmarrum357():
     aiohttp_cookiejar_pickle_path = app_config_dir_path / 'aiohttp_cookiejar.pickle'
     OUTPUT_FILE_MODE = 'ab'
     RX_TILDA_NUM = re.compile(r'(?<=~)\d+$')
-    CONTENT_TYPE_TO_SUFFIX = {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3', c.APPLICATION_OCTET_STREAM: '.bin'}
+    CONTENT_TYPE_TO_SUFFIX = defaultdict(lambda: '.dat', {c.AUDIO_AAC: '.aac', c.AUDIO_MPEG: '.mp3'})
     _24H_AS_SECONDS = 24 * 60 * 60
     _5M_AS_SECONDS = 5 * 60
 
@@ -597,11 +598,7 @@ class Macmarrum357():
             count = switch_file_datetime.count
             switch_file_datetime_iter = switch_file_datetime.mk_iter()
             start_output_file_args = (output_dir, filename, switch_file_datetime_iter, count)
-            i = 0
             while self.content_type is None:
-                if (i := i + 1) > self.CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER:
-                    recorder_log.debug(f"content_type still None - after {i} * {self.CONSUMER_CONTENT_TYPE_WAIT_SEC} sec - queue #{q}")
-                    break
                 await asyncio.sleep(self.CONSUMER_CONTENT_TYPE_WAIT_SEC)
             suffix = self.CONTENT_TYPE_TO_SUFFIX.get(self.content_type)
             self.file_path, self.fo, num, end_dt, duration = await self.start_output_file(*start_output_file_args, suffix)
