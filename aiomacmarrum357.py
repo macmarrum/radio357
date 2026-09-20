@@ -2,8 +2,10 @@
 # aiomacmarrum357 – an alternative CLI player/recorder for Radio357 patrons
 # Copyright (C) 2024-2026  macmarrum (at) outlook (dot) ie
 # SPDX-License-Identifier: GPL-3.0-or-later
+import argparse
 import asyncio
 import atexit
+import dataclasses
 import email.utils
 import json
 import locale
@@ -17,7 +19,7 @@ import signal
 import subprocess
 import sys
 from collections import defaultdict
-from dataclasses import dataclass, fields, asdict, field
+from dataclasses import dataclass, asdict
 from hashlib import blake2b
 from textwrap import dedent
 from zoneinfo import ZoneInfo
@@ -226,64 +228,176 @@ class c:
     ICY_METAINT = 'icy-metaint'
     ZERO_AS_BYTES = b'\x00'
     FOREVER = 'forever'
-    RECORD_ = '--record='
-    PLAY_WITH_ = '--play-with='
+    REC_ = 'rec_'
     RETRY_AFTER = 'Retry-After'
     TOO_MANY_REQUESTS_TEXT = 'Too many requests - the server has reached its maximum global connection capacity'
 
 
-REDCDN_LIVE_NO_PREROLL: ClassVar[str] = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
-
-
 @dataclass
 class Settings:
-    TOML_PATH: ClassVar[Path] = app_config_dir_path / 'config.toml'
-    live_stream_url: str = 'https://stream.radio357.pl/?s=www'
-    log_in: bool = True
-    email: str = ''
-    password: str = ''
-    icy_title: bool = True
-    filename_timezone: str | None = None
-    nameservers: list[str] | None = None
-    host: str = 'localhost'
-    port: int = 8357
-    user_agent: str | None = None
-    player_args: list[str] | tuple[str] = ('mpv', '--force-window=immediate', '--fs=no')
-    handler_start_buffer_sec: float = 0.0
+    CONFIG_TOML_PATH: ClassVar[Path] = app_config_dir_path / 'config.toml'
+    LOGGING_TOML_PATH: ClassVar[Path] = app_config_dir_path / 'logging.toml'
+    LIVE_STREAM_URL: ClassVar[str] = 'https://stream.radio357.pl/?s=www'
+    LOG_IN: ClassVar[bool] = True
+    EMAIL: ClassVar[str] = ''
+    PASSWORD: ClassVar[str] = ''
+    ICY_TITLE: ClassVar[bool] = True
+    HOST: ClassVar[str] = 'localhost'
+    PORT: ClassVar[int] = 8357
+    PLAYER_ARGS: ClassVar[tuple[str, ...]] = ('mpv', '--force-window=immediate', '--cache-secs=1')
+    HANDLER_START_BUFFER_SEC: ClassVar[float] = 0.0
     # with icy_title enabled, I can see icy_metaint: 16000
     # in the mp3 stream, 418 is the most common chunk size I've observed
     # in the aac stream, ~800
-    queue0_length_limit: int = 0  # 2400  # limit on the count of chunks in a queue - 0 means unlimited
-    queue_length_limit: int = 0  # 200  # limit on the count of chunks in a queue - 0 means unlimited
-    queue0_byte_size_limit: int = 960_000  # (~60 sec) limit on size (in bytes) of all chunks in queue #0 - usually for writing to disk
-    queue_byte_size_limit: int = 80_000  # (~5 sec) limit on size (in bytes) of all chunks in a subsequent queue (where # > 0)
-    concurrent_queues_limit: int = 1_000  # limit on the number of concurrent consumers, post which status code 429 is sent
+    QUEUE0_LENGTH_LIMIT: ClassVar[int] = 0  # 2400  # limit on the count of chunks in a queue - 0 means unlimited
+    QUEUE_LENGTH_LIMIT: ClassVar[int] = 0  # 200  # limit on the count of chunks in a queue - 0 means unlimited
+    QUEUE0_BYTE_SIZE_LIMIT: ClassVar[int] = 960_000  # (~60 sec) limit on size (in bytes) of all chunks in queue #0 - usually for writing to disk
+    QUEUE_BYTE_SIZE_LIMIT: ClassVar[int] = 80_000  # (~5 sec) limit on size (in bytes) of all chunks in a subsequent queue (where # > 0)
+    CONCURRENT_QUEUES_LIMIT: ClassVar[int] = 1_000  # limit on the number of concurrent consumers, post which status code 429 is sent
+    REDCDN_LIVE_NO_PREROLL: ClassVar[str] = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
+    config_toml_path: Path | None = None
+    logging_toml_path: Path | None = None
+    sleep: float | None = None
+    live_stream_url: str | None = None
+    log_in: bool | None = None
+    email: str | None = None
+    password: str | None = None
+    user_agent: str | None = None
+    icy_title: bool | None = None
+    nameservers: list[str] | tuple[str, ...] | None = None
+    host: str | None = None
+    port: int | None = None
+    play: bool | None = None
+    player_args: list[str] | tuple[str, ...] | None = None
+    play_with: list[str] | tuple[str, ...] | None = None
+    handler_start_buffer_sec: float | None = None
+    queue0_length_limit: int | None = None
+    queue_length_limit: int | None = None
+    queue0_byte_size_limit: int | None = None
+    queue_byte_size_limit: int | None = None
+    concurrent_queues_limit: int | None = None
     chunk_info_collector_filename: str | None = None
-    live_stream_location_replacements: dict[str, str] = field(default_factory=lambda: {REDCDN_LIVE_NO_PREROLL: REDCDN_LIVE_NO_PREROLL + '?preroll=0'})
+    live_stream_location_replacements: dict[str, str] | None = None
+    record: bool | None = None
+    rec_output_dir: Path | None = None
+    rec_filename: str | None = None
+    rec_filename_timezone: str | None = None
+    rec_switch_file_times: list[str] | tuple[str, ...] | None = None
 
     @classmethod
-    def from_toml(cls):
-        with cls.TOML_PATH.open('rb') as fi:
+    def from_cli_and_toml(cls, argv: list[str] | None):
+        settings_from_cli = cls.from_cli(argv)
+        if settings_from_cli.config_toml_path in (None, cls.CONFIG_TOML_PATH) and not cls.CONFIG_TOML_PATH.exists():
+            cls.write_minimal_toml()
+        settings_from_toml = cls.from_toml_path(settings_from_cli.config_toml_path or cls.CONFIG_TOML_PATH)
+        dict_from_cli_where_value_is_not_none = {k: v for k, v in asdict(settings_from_cli).items() if v is not None}
+        s = dataclasses.replace(settings_from_toml, **dict_from_cli_where_value_is_not_none)
+        if s.logging_toml_path is None:
+            s.logging_toml_path = cls.LOGGING_TOML_PATH
+        if s.live_stream_url is None:
+            s.live_stream_url = cls.LIVE_STREAM_URL
+        if s.log_in is None and s.email and s.password:
+            s.log_in = cls.LOG_IN
+        if s.icy_title is None:
+            s.icy_title = cls.ICY_TITLE
+        if s.host is None:
+            s.host = cls.HOST
+        if s.port is None:
+            s.port = cls.PORT
+        if s.player_args is None:
+            s.player_args = cls.PLAYER_ARGS
+        if s.handler_start_buffer_sec is None:
+            s.handler_start_buffer_sec = cls.HANDLER_START_BUFFER_SEC
+        if s.queue0_length_limit is None:
+            s.queue0_length_limit = cls.QUEUE0_LENGTH_LIMIT
+        if s.queue_length_limit is None:
+            s.queue_length_limit = cls.QUEUE_LENGTH_LIMIT
+        if s.queue0_byte_size_limit is None:
+            s.queue0_byte_size_limit = cls.QUEUE0_BYTE_SIZE_LIMIT
+        if s.queue_byte_size_limit is None:
+            s.queue_byte_size_limit = cls.QUEUE_BYTE_SIZE_LIMIT
+        if s.concurrent_queues_limit is None:
+            s.concurrent_queues_limit = cls.CONCURRENT_QUEUES_LIMIT
+        if s.live_stream_location_replacements is None:
+            s.live_stream_location_replacements = {cls.REDCDN_LIVE_NO_PREROLL: cls.REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
+        return s
+
+    @classmethod
+    def from_cli(cls, argv: list[str] | None) -> Settings:
+        parser = argparse.ArgumentParser()
+        parser.add_argument('-c', '--config-toml-path', type=path_expanduser, help='Path to config.toml; <app-config-dir>/config.toml by default, where <app-config-dir> is %%APPDATA%%/macmarrum357 on Windows and $XDG_CONFIG_DIR/macmarrum357 on POSIX ($XDG_CONFIG_DIR is $HOME/.config if not set)')
+        parser.add_argument('--logging-toml-path', type=path_expanduser, help='Path to logging.toml; <app-config-dir>/logging.toml by default')
+        parser.add_argument('--sleep', type=float, help='Sleep SECONDS before connecting to the live-stream server')
+        parser.add_argument('--live-stream-url')
+        parser.add_argument('--log-in', action='store_true', default=None, help='True by default if email and password are given')
+        parser.add_argument('--email')
+        parser.add_argument('--password')
+        parser.add_argument('--user-agent')
+        parser.add_argument('--icy-title', action='store_true', default=None, help=f"Request ICY Title from the upstream server and relay it for each player; {Settings.ICY_TITLE} by default")
+        parser.add_argument('--nameservers', nargs='+', help='Use different nameservers; helpful if aiodns fails with ClientConnectorDNSError for system-wide ones')
+        parser.add_argument('--host', help='Relay-server host; localhost by default')
+        parser.add_argument('--port', type=int, help='Relay-server port; 8357 by default')
+        parser.add_argument('--play', action='store_true', default=None, help='Launch the configured player and point it to the host:port of the relay server for the live stream')
+        parser.add_argument('--player-args', type=json.loads, help='Path to player and its arguments (if any), as a JSON array; ["mpv", "--force-window=immediate", "--cache-secs=1"] by default')
+        parser.add_argument('--play-with', type=json.loads, help='Overwrites --player-args and sets --play')
+        parser.add_argument('--handler-start-buffer-sec', type=float, help=argparse.SUPPRESS)
+        parser.add_argument('--queue0-lenght-limit', type=int, help=argparse.SUPPRESS)
+        parser.add_argument('--queue-lenght-limit', type=int, help=argparse.SUPPRESS)
+        parser.add_argument('--queue0-byte-size-limit', type=int, help=argparse.SUPPRESS)
+        parser.add_argument('--queue-byte-size-limit', type=int, help=argparse.SUPPRESS)
+        parser.add_argument('--concurrent-queues-limit', type=int, help=argparse.SUPPRESS)
+        parser.add_argument('--chunk-info-collector-filename', type=path_expanduser, help=argparse.SUPPRESS)
+        parser.add_argument('--record', action='store_true', default=None, help='Run recorder')
+        rec_gr = parser.add_argument_group('recording options')
+        rec_gr.add_argument('--rec-output-dir', type=path_expanduser)
+        rec_gr.add_argument('--rec-filename', help='By default constructed dynamically for each file as f"{start.strftime(\'%%Y-%%m-%%d,%%a_%%H\')}{suffix}"')
+        rec_gr.add_argument('--rec-filename-timezone', help='Convert time to this timezone in the (default) filename')
+        rec_gr.add_argument('--rec-switch-file-times', nargs='*')
+        nargs = parser.parse_args(argv)
+        cli_options_as_dict_where_value_is_not_none = {k: v for k, v in vars(nargs).items() if v is not None}
+        s = Settings(**cli_options_as_dict_where_value_is_not_none)
+        return s
+
+    @classmethod
+    def from_toml_path(cls, toml_path):
+        with toml_path.open('rb') as fi:
             conf = tomllib.load(fi)
         obfuscated_conf = conf.copy()
         for k, v in obfuscated_conf.items():
             if k in [c.EMAIL, c.PASSWORD] and v:
                 obfuscated_conf[k] = '*****'
-        macmarrum_log.debug(f"load_config - {cls.TOML_PATH.name} - {obfuscated_conf}")
-        if conf.get(c.LOG_IN, True) and (not conf.get(c.EMAIL) or not conf.get(c.PASSWORD)):
-            macmarrum_log.critical(f"{cls.TOML_PATH} is missing email and/or password values")
-            sys.exit(f"brak email i/lub password w {cls.TOML_PATH}")
+        macmarrum_log.debug(f"load_config {str(toml_path)!r} - {obfuscated_conf}")
+        if conf.get(c.LOG_IN) and (not conf.get(c.EMAIL) or not conf.get(c.PASSWORD)):
+            macmarrum_log.critical(f"{str(toml_path)!r} is missing email and/or password values")
+            sys.exit(f"brak email i/lub password w {str(toml_path)!r}")
         return cls(**conf)
 
     @classmethod
-    def write_minimal_toml(cls):
-        with cls.TOML_PATH.open('wb') as fo:
-            conf = {c.LOG_IN: cls.log_in, c.EMAIL: cls.email, c.PASSWORD: cls.password,
-                    c.LIVE_STREAM_URL: cls.live_stream_url,
-                    c.ICY_TITLE: cls.icy_title,
-                    c.PLAYER_ARGS: cls.player_args,
+    def write_minimal_toml(cls, toml_path: Path | None = None):
+        path = toml_path or cls.CONFIG_TOML_PATH
+        with path.open('wb') as fo:
+            conf = {c.LIVE_STREAM_URL: cls.live_stream_url or cls.LIVE_STREAM_URL,
+                    c.LOG_IN: cls.log_in if cls.log_in is not None else cls.LOG_IN,
+                    c.EMAIL: cls.email or cls.EMAIL,
+                    c.PASSWORD: cls.password or cls.PASSWORD,
+                    c.ICY_TITLE: cls.icy_title if cls.icy_title is not None else cls.ICY_TITLE,
+                    c.PLAYER_ARGS: cls.player_args or cls.PLAYER_ARGS,
                     }
             tomli_w.dump(conf, fo)
+
+    def __post_init__(self):
+        if self.play_with:
+            self.player_args = self.play_with
+            self.play = True
+
+    @property
+    def recorder_kwargs(self):
+        rec_kwargs = {}
+        if self.record:
+            for k, v in asdict(self).items():
+                if k.startswith(c.REC_):
+                    rec_kwargs[k.removeprefix(c.REC_)] = v
+        return rec_kwargs
 
 
 class Macmarrum357():
@@ -345,32 +459,24 @@ class Macmarrum357():
     _24H_AS_SECONDS = 24 * 60 * 60
     _5M_AS_SECONDS = 5 * 60
 
-    def __init__(self, argv: list[str], recorder_kwargs: dict = None):
+    def __init__(self, s: Settings):
+        self.s = s
         self.init_datetime = datetime.now().astimezone()
-        self.argv = argv
-        self.recorder_kwargs = recorder_kwargs
         macmarrum_log.info('START Macmarrum357')
-        self.validate_that_consumers_were_requested(argv)
-        self.conf = self.load_config()
-        self.should_log_in = self.conf.log_in
+        self.validate_that_consumers_were_requested(s)
+        self.should_log_in = s.log_in is True
         self.is_cookies_changed = False
         self.is_client_running = False
         self.session: aiohttp.ClientSession = None
-        self.location_replacements = self.conf.live_stream_location_replacements
-        queue0_length_limit = self.conf.queue0_length_limit
-        queue_length_limit = self.conf.queue_length_limit
-        queue0_byte_size_limit = self.conf.queue0_byte_size_limit
-        queue_byte_size_limit = self.conf.queue_byte_size_limit
         self.chunk_info_collector_queue = None
-        self.chunk_info_collector_filename = self.conf.chunk_info_collector_filename
-        if self.chunk_info_collector_filename and not aiofiles:
-            macmarrum_log.warning(f"chunk_info_collector_filename: {self.chunk_info_collector_filename!r} but aiofiles isn't installed -> no chunk_info_collector")
-            self.chunk_info_collector_filename = None
-        initial_qs = (0, 1) if self.chunk_info_collector_filename else (0,)  # chunk_info_collector_queue gets q=1
-        self.queue_gen = ((ByteSizedAioQueue(*(queue0_length_limit, queue0_byte_size_limit) if q in initial_qs else (queue_length_limit, queue_byte_size_limit)), q) for q in range(sys.maxsize))
+        if s.chunk_info_collector_filename and not aiosqlite:
+            macmarrum_log.warning(f"chunk_info_collector_filename: {s.chunk_info_collector_filename!r} but aiosqlite isn't installed")
+            s.chunk_info_collector_filename = None
+        initial_qs = (0, 1) if s.chunk_info_collector_filename else (0,)  # chunk_info_collector_queue gets q=1
+        self.queue_gen = ((ByteSizedAioQueue(*(s.queue0_length_limit, s.queue0_byte_size_limit) if q in initial_qs else (s.queue_length_limit, s.queue_byte_size_limit)), q) for q in range(sys.maxsize))
         self._consumer_queues: list[tuple[ByteSizedAioQueue, int]] = []
         self.consumers_length = 0
-        self.concurrent_queues_limit = self.conf.concurrent_queues_limit
+        self.concurrent_queues_limit = s.concurrent_queues_limit
         self.fo = None
         self.file_path: Path = None
         self.content_type = None
@@ -380,15 +486,12 @@ class Macmarrum357():
         self.is_distribute_to_consumers_initial_run = True
         self.is_queue0_registered = False
         self.forever_qs = {}
-        self.filename_timezone = self.conf.filename_timezone
+        self.filename_tzinfo = None
 
     @staticmethod
-    def validate_that_consumers_were_requested(argv: list[str]):
-        for arg in argv:
-            if arg.startswith(c.RECORD_) or arg == '--play' or arg.startswith(c.PLAY_WITH_):
-                break
-        else:  # no break
-            message = 'no consumers requested: no --play or --play-with= or --record='
+    def validate_that_consumers_were_requested(s: Settings):
+        if not (s.record or s.play):
+            message = 'no consumers requested: no --play or --record'
             macmarrum_log.critical(message)
             raise ValueError(message)
 
@@ -420,11 +523,6 @@ class Macmarrum357():
         except ValueError:
             macmarrum_log.debug(f"unregister_stream_consumer - queue #{q} already unregistered")
 
-    def load_config(self):
-        if not Settings.TOML_PATH.exists():
-            Settings.write_minimal_toml()
-        return Settings.from_toml()
-
     async def run_client(self):
         self.is_client_running = True
         self.session = aiohttp.ClientSession(connector=self.mk_connector(), timeout=self.mk_timeout(), cookie_jar=self.mk_cookie_jar())
@@ -432,16 +530,16 @@ class Macmarrum357():
             # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
             await self.refresh_token_or_log_in_and_dump_cookies_if_needed(macmarrum_log)
             periodic_token_refresh_task = asyncio.create_task(self.run_periodic_token_refresh())
-        if self.chunk_info_collector_filename:
+        if self.s.chunk_info_collector_filename:
             chunk_checksum_collector_task = asyncio.create_task(self.run_chunk_info_collector())
         resp = None
         i = 0
         chunk_num = 0
         headers = self.UA_HEADERS | self.AE_HEADERS
-        if self.conf.icy_title is True:
+        if self.s.icy_title:
             headers |= {c.ICY_METADATA: '1'}
         while True:
-            url = self.conf.live_stream_url
+            url = self.s.live_stream_url
             try:
                 macmarrum_log.debug(f"GET {url} - {headers}")
                 while True:  # handle redirects
@@ -450,7 +548,7 @@ class Macmarrum357():
                     resp = await self.session.get(url, headers=headers, allow_redirects=False)
                     if resp.status in [301, 302, 303, 307, 308] and (location := resp.headers.get(c.LOCATION)):
                         macmarrum_log.debug(f"GET => {resp.status} - {c.LOCATION}: {location}")
-                        if replacement := self.location_replacements.get(location):
+                        if replacement := self.s.live_stream_location_replacements.get(location):
                             macmarrum_log.debug(f"replace location with {replacement}")
                             location = replacement
                         url = location
@@ -552,7 +650,7 @@ class Macmarrum357():
         # fdns bug affecting aiohttp: https://github.com/netblue30/fdns/issues/47
         # workaround: use different name server(s)
         # https://docs.aiohttp.org/en/stable/client_advanced.html#resolving-using-custom-nameservers
-        if nameservers := self.conf.nameservers:
+        if nameservers := self.s.nameservers:
             try:
                 resolver = AsyncResolver(nameservers=nameservers)
                 connector = aiohttp.TCPConnector(resolver=resolver)
@@ -583,9 +681,10 @@ class Macmarrum357():
             cookie_jar.load(self.aiohttp_cookiejar_pickle_path)
         return cookie_jar
 
-    async def run_recorder(self, output_dir: str | Path = None, filename: str | Callable | None = None,
+    async def run_recorder(self, output_dir: str | Path = None, filename: str | Callable | None = None, filename_timezone: str | None = None,
                            switch_file_times: SwitchFileTimesType = None,
                            on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None):
+        self.filename_tzinfo = ZoneInfo(filename_timezone) if filename_timezone else None
         try:
             queue, q = self.register_stream_consumer_to_get_queue()
             if output_dir is None:
@@ -632,9 +731,8 @@ class Macmarrum357():
 
     async def start_output_file(self, output_dir, filename, switch_file_datetime_iterator: Iterator, count: int, suffix: str):
         file_num, start, end, duration = next(switch_file_datetime_iterator)
-        filename_tzinfo = ZoneInfo(self.filename_timezone) if self.filename_timezone else None
-        filename_start = start.astimezone(filename_tzinfo)
-        filename_end = end.astimezone(filename_tzinfo)
+        filename_start = start.astimezone(self.filename_tzinfo)
+        filename_end = end.astimezone(self.filename_tzinfo)
         output_path = Path(output_dir) / filename(start=filename_start, end=filename_end, duration=duration, file_num=file_num,
                                                   count=count, suffix=suffix) if callable(filename) else filename
         is_filename_changed = False
@@ -712,8 +810,8 @@ class Macmarrum357():
                 raise RuntimeError(msg)
 
     async def run_chunk_info_collector(self):
-        macmarrum_log.debug(f"run_chunk_info_collector {self.chunk_info_collector_filename!r}")
-        async with aiosqlite.connect(self.chunk_info_collector_filename) as db:
+        macmarrum_log.debug(f"run_chunk_info_collector {self.s.chunk_info_collector_filename!r}")
+        async with aiosqlite.connect(self.s.chunk_info_collector_filename) as db:
             await db.execute('PRAGMA foreign_keys = ON')
             await db.execute(dedent('''\
                 CREATE TABLE IF NOT EXISTS run (
@@ -843,7 +941,7 @@ class Macmarrum357():
 
     async def log_in(self, logger: logging.Logger):
         url = 'https://auth.r357.eu/api/auth/login'
-        credentials = {c.EMAIL: self.conf[c.EMAIL], c.PASSWORD: self.conf[c.PASSWORD]}
+        credentials = {c.EMAIL: self.s.email, c.PASSWORD: self.s.password}
         headers = self.UA_HEADERS | self.ACCEPT_JSON_HEADERS
         logger.debug(f"log_in - {url} - {headers} - json=$credentials")
         async with self.session.post(url, headers=headers, json=credentials) as resp:
@@ -910,7 +1008,7 @@ class Macmarrum357():
         server_resp.enable_chunked_encoding()
         await server_resp.prepare(request)
         buffer = bytearray()
-        handler_start_buffer_sec = self.conf.handler_start_buffer_sec
+        handler_start_buffer_sec = self.s.handler_start_buffer_sec
         if handler_start_buffer_sec:
             i = 0
             t = monotonic()
@@ -987,7 +1085,7 @@ class Macmarrum357():
             web_log.debug(f"{handle_request} => 429 Too Many Requests (globally)")
             return web.Response(status=429, headers=self.RETRY_AFTER_HEADERS, text=c.TOO_MANY_REQUESTS_TEXT)
         buffer = b''
-        handler_start_buffer_sec = self.conf.handler_start_buffer_sec
+        handler_start_buffer_sec = self.s.handler_start_buffer_sec
         if not is_file_path and handler_start_buffer_sec:
             i = 0
             t = monotonic()
@@ -1313,42 +1411,17 @@ def encode_fspath(name: str) -> str:
     return encoded_name
 
 
-def sleep_if_requested(argv: list[str]):
-    for arg in argv:
-        if arg.startswith('--sleep='):
-            sec = float(arg.removeprefix('--sleep='))
-            macmarrum_log.info(f"sleep {sec:.1f} second(s)")
-            sleep(sec)
-            return
-
-
-def get_recorder_kwargs(argv: list[str]):
-    for arg in argv:
-        if arg.startswith(c.RECORD_):
-            args_as_json = arg.removeprefix(c.RECORD_)
-            recorder_log.debug(f"{args_as_json=}")
-            record_args = json.loads(args_as_json)
-            recorder_log.debug(f"{record_args=}")
-            return record_args
-    return {}
+def sleep_if_requested(s: Settings):
+    if s.sleep:
+        macmarrum_log.info(f"sleep {s.sleep:.1f} second(s)")
+        sleep(s.sleep)
+        return
 
 
 def spawn_player_if_requested(macmarrum357, host, port):
-    for arg in macmarrum357.argv:
-        if arg.startswith(c.PLAY_WITH_):
-            player = arg.removeprefix(c.PLAY_WITH_)
-            player_args = json.loads(player)
-            if not isinstance(player_args, list):
-                player_args = [player_args]
-            break
-        elif arg == '--play':
-            if not (player_args := macmarrum357.conf.player_args):
-                macmarrum_log.error(f"spawn_player - `--play` requested but no {c.PLAYER_ARGS} in config")
-            break
-    else:  # no break
-        player_args = None
-    if player_args:
-        player_args.append(f"http://{host}:{port}/live")
+    s = macmarrum357.s
+    if s.player_args:
+        player_args = [*s.player_args, f"http://{host}:{port}/live"]
         macmarrum_log.info(f"spawn_player - {' '.join(quote(a) for a in player_args)}")
         subprocess.Popen(player_args)
 
@@ -1376,7 +1449,7 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     port = app[c.MACMARRUM357_PORT]
     spawn_player_if_requested(macmarrum357, host, port)
     live_stream_client_task = asyncio.create_task(macmarrum357.run_client())
-    if recorder_kwargs := macmarrum357.recorder_kwargs:
+    if recorder_kwargs := macmarrum357.s.recorder_kwargs:
         live_stream_recorder_task = asyncio.create_task(macmarrum357.run_recorder(**recorder_kwargs))
     shutdown_task = asyncio.create_task(shutdown_app_when_no_consumers(macmarrum357))
     yield
@@ -1391,22 +1464,22 @@ def web_log_info_splitlines(message: str):
         web_log.info(line)
 
 
+def path_expanduser(path: str) -> Path:
+    return Path(path).expanduser()
+
+
 def main(argv: list[str] = None):
     """Run Macmarrum357 (live-stream client) and a live-stream server app"""
     # https://docs.aiohttp.org/en/stable/web_advanced.html#background-tasks
     if argv is None:
-        argv = sys.argv
-    logging_toml_path = app_config_dir_path / 'logging.toml'
-    for arg in argv:
-        if arg.startswith('--logging-toml-path='):
-            logging_toml_path = Path(arg.removeprefix('--logging-toml-path=')).expanduser()
-    queue_listener = configure_logging_and_get_listener(logging_toml_path)
+        argv = sys.argv[1:]
+    settings = Settings.from_cli_and_toml(argv)
+    queue_listener = configure_logging_and_get_listener(settings.logging_toml_path)
     queue_listener.start()
     atexit.register(queue_listener.stop)
     try:
-        sleep_if_requested(argv)
-        recorder_kwargs = get_recorder_kwargs(argv)
-        macmarrum357 = Macmarrum357(argv, recorder_kwargs)
+        sleep_if_requested(settings)
+        macmarrum357 = Macmarrum357(settings)
         live_stream_server_app = web.Application()
         live_stream_server_app[c.MACMARRUM357] = macmarrum357
         live_stream_server_app.cleanup_ctx.append(macmarrum357_cleanup_ctx)
@@ -1414,11 +1487,11 @@ def main(argv: list[str] = None):
             web.get('/live', macmarrum357.handle_request_live),
             web.get('/file-then-live', macmarrum357.handle_request_file_then_live)
         ])
-        host = macmarrum357.conf.host
-        port = macmarrum357.conf.port
+        host = macmarrum357.s.host
+        port = macmarrum357.s.port
         live_stream_server_app[c.MACMARRUM357_HOST] = host
         live_stream_server_app[c.MACMARRUM357_PORT] = port
-        if macmarrum357.conf.nameservers and os.name == 'nt':
+        if macmarrum357.s.nameservers and os.name == 'nt':
             # aiodns requires SelectorEventLoop on Windows: https://github.com/aio-libs/aiodns/issues/78
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines)
