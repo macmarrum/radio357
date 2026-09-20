@@ -1420,7 +1420,7 @@ def sleep_if_requested(s: Settings):
 
 def spawn_player_if_requested(macmarrum357, host, port):
     s = macmarrum357.s
-    if s.player_args:
+    if s.play and s.player_args:
         player_args = [*s.player_args, f"http://{host}:{port}/live"]
         macmarrum_log.info(f"spawn_player - {' '.join(quote(a) for a in player_args)}")
         subprocess.Popen(player_args)
