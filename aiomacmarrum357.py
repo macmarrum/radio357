@@ -1491,10 +1491,9 @@ def main(argv: list[str] = None):
         port = macmarrum357.s.port
         live_stream_server_app[c.MACMARRUM357_HOST] = host
         live_stream_server_app[c.MACMARRUM357_PORT] = port
-        if macmarrum357.s.nameservers and os.name == 'nt':
-            # aiodns requires SelectorEventLoop on Windows: https://github.com/aio-libs/aiodns/issues/78
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines)
+        # aiodns requires SelectorEventLoop on Windows: https://github.com/aio-libs/aiodns/issues/78
+        loop = asyncio.SelectorEventLoop() if macmarrum357.s.nameservers and os.name == 'nt' else None
+        web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines, loop=loop)
     except Exception as e:
         macmarrum_log.critical(f"{type(e).__module__}.{type(e).__qualname__}: {e}")
         macmarrum_log.debug('', exc_info=True)
