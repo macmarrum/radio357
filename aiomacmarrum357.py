@@ -190,8 +190,6 @@ SwitchFileTimesType = list[StrIntDt] | tuple[StrIntDt]
 
 class c:
     MACMARRUM357 = 'macmarrum357'
-    MACMARRUM357_HOST = 'macmarrum357.host'
-    MACMARRUM357_PORT = 'macmarrum357.port'
     LIVE_STREAM_URL = 'live_stream_url'
     LOG_IN = 'log_in'
     EMAIL = 'email'
@@ -1418,10 +1416,10 @@ def sleep_if_requested(s: Settings):
         return
 
 
-def spawn_player_if_requested(macmarrum357, host, port):
+def spawn_player_if_requested(macmarrum357):
     s = macmarrum357.s
     if s.play and s.player_args:
-        player_args = [*s.player_args, f"http://{host}:{port}/live"]
+        player_args = [*s.player_args, f"http://{s.host}:{s.port}/live"]
         macmarrum_log.info(f"spawn_player - {' '.join(quote(a) for a in player_args)}")
         subprocess.Popen(player_args)
 
@@ -1445,9 +1443,7 @@ async def macmarrum357_cleanup_ctx(app: web.Application):
     a code before yield is an initialization stage (called on startup), a code after yield is executed on cleanup.
     """
     macmarrum357: Macmarrum357 = app[c.MACMARRUM357]
-    host = app[c.MACMARRUM357_HOST]
-    port = app[c.MACMARRUM357_PORT]
-    spawn_player_if_requested(macmarrum357, host, port)
+    spawn_player_if_requested(macmarrum357)
     live_stream_client_task = asyncio.create_task(macmarrum357.run_client())
     if recorder_kwargs := macmarrum357.s.recorder_kwargs:
         live_stream_recorder_task = asyncio.create_task(macmarrum357.run_recorder(**recorder_kwargs))
@@ -1489,8 +1485,6 @@ def main(argv: list[str] = None):
         ])
         host = macmarrum357.s.host
         port = macmarrum357.s.port
-        live_stream_server_app[c.MACMARRUM357_HOST] = host
-        live_stream_server_app[c.MACMARRUM357_PORT] = port
         # aiodns requires SelectorEventLoop on Windows: https://github.com/aio-libs/aiodns/issues/78
         loop = asyncio.SelectorEventLoop() if macmarrum357.s.nameservers and os.name == 'nt' else None
         web.run_app(app=live_stream_server_app, host=host, port=port, print=web_log_info_splitlines, loop=loop)
