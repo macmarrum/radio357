@@ -749,7 +749,7 @@ class Macmarrum357():
             recorder_log.warning(f"change filename to {new_stem}{output_path.suffix}: file exists {old_path}")
             is_filename_changed = True
         if not is_filename_changed and 'a' in self.OUTPUT_FILE_MODE and output_path.exists():
-            recorder_log.warning(f"append to an exiting file - {output_path}")
+            recorder_log.warning(f"append to an existing file - {output_path}")
         fo = await aiofiles.open(output_path, self.OUTPUT_FILE_MODE)
         return output_path, fo, file_num, end, duration
 
