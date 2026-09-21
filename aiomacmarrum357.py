@@ -281,6 +281,8 @@ class Settings:
     rec_filename: str | Callable | None = None
     rec_filename_timezone: str | None = None
     rec_switch_file_times: list[str] | tuple[str, ...] | None = None
+    rec_on_file_start: str | Callable | None = None
+    rec_on_file_end: str | Callable | None = None
 
     @classmethod
     def from_cli_and_toml(cls, argv: list[str] | None):
@@ -351,6 +353,8 @@ class Settings:
         rec_gr.add_argument('--rec-filename', help='By default constructed dynamically for each file as f"{start.strftime(\'%%Y-%%m-%%d,%%a_%%H\')}{suffix}"')
         rec_gr.add_argument('--rec-filename-timezone', help='Convert time to this timezone in the (default) filename')
         rec_gr.add_argument('--rec-switch-file-times', nargs='*')
+        rec_gr.add_argument('--rec-on-file-start')
+        rec_gr.add_argument('--rec-on-file-end')
         nargs = parser.parse_args(argv)
         cli_options_as_dict_where_value_is_not_none = {k: v for k, v in vars(nargs).items() if v is not None}
         s = Settings(**cli_options_as_dict_where_value_is_not_none)
