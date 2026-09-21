@@ -278,7 +278,7 @@ class Settings:
     live_stream_location_replacements: dict[str, str] | None = None
     record: bool | None = None
     rec_output_dir: Path | None = None
-    rec_filename: str | None = None
+    rec_filename: str | Callable | None = None
     rec_filename_timezone: str | None = None
     rec_switch_file_times: list[str] | tuple[str, ...] | None = None
 
