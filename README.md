@@ -10,7 +10,7 @@ Opcjonalnie nagrywa strumień do jednego lub kilku plików, zmieniając je o okr
 
 > Przykładowo, chcę słuchać audycji niedzielnej o 20:00, ale często spóźniam się i zaczynam około 20:30.\
 > Włączam zatem nagrywanie audycji, a o 20:30 uruchamiam odtwarzanie od początku nagrywanego pliku.
-> 1. Dodaję polecenie do Harmonogramu Zadań Windows ([instrukcje](https://pl.101-help.com/jak-utworzyc-automatyczne-zadanie-za-pomoca-harmonogramu-zadan-w-systemie-windows-11-10-6868e186b0/)) `"C:\Program Files\Python311\python.exe" "C:\Users\Mac\aiomacmarrum357.py" --record='{"output_dir": "C:\\Users\\Mac\\radio357", "switch_file_times": ["22:00"]}'`
+> 1. Dodaję polecenie do Harmonogramu Zadań Windows ([instrukcje](https://pl.101-help.com/jak-utworzyc-automatyczne-zadanie-za-pomoca-harmonogramu-zadan-w-systemie-windows-11-10-6868e186b0/)) `"C:\Program Files\Python311\python.exe" "C:\Users\Mac\aiomacmarrum357.py" --record --rec-output-dir "C:\\Users\\Mac\\radio357" --rec-switch-file-times "22:00"`
 > 2. Między 20:00 a 22:00 uruchamiam odtwarzanie http://localhost:8357/file-then-live, np. w **mpv** albo VLC.
 
 Odtwarzanie na żywo\
@@ -19,21 +19,21 @@ lub\
 `python aiomacmarrum357.py --play-with='["C:\\Program Files\\mpv\\mpv.exe", "--force-window=immediate", "--fs=no"]'`
 
 Nagrywanie\
-`python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\radio357", "switch_file_times": ["9:00", "12:00"]}'`
+`python aiomacmarrum357.py --record --rec-output-dir "C:\\Users\\Mac\\radio357" --rec-switch-file-times "9:00" "12:00"`
 
 Powyższe polecenie zapisze program na żywo do plików, zmieniając je o określonych porach;
 w przypadku uruchomienia o 6:00 zapisze dwa pliki:
 * 2024-09-23,Mon_06.aac - obejmujący audycję od 6:00 do 9:00
 * 2024-09-23,Mon_09.aac - obejmujący audycję od 9:00 do 12:00
 
-***Wskazówka**: wartości dla opcji `--play-with=` oraz `--record=` są w formacie JSON*
+***Wskazówka**: wartości dla opcji `--play-with=` są w formacie JSON*
 
 Nagrywanie i odtwarzanie na żywo\
-`python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\radio357", "switch_file_times": ["9:00", "12:00"]}' --play`
+`python aiomacmarrum357.py --record --rec-output-dir "C:\\Users\\Mac\\radio357" --rec-switch-file-times "9:00" "12:00" --play`
 
 Nagrywanie ze zmianą pliku o pełnej godzinie od momentu uruchomienia do północy,
 a po każdej zmianie uruchomienie w tle polecenia `aac-to-m4a`\
-`python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\radio357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
+`python aiomacmarrum357.py --record --rec-output-dir "C:\\Users\\Mac\\radio357" --rec-switch-file-times '*:00' "0:00" --rec-on-file-end "aac-to-m4a"`
 
 Przykładowy skrypt `aac-to-m4a` – **aiomacmarrum357.py** przekaże ścieżkę do nagranego pliku jako pierwszy argument
 

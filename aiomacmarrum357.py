@@ -415,16 +415,16 @@ class Macmarrum357():
     `python aiomacmarrum357.py --play-with='["C:\\Program Files\\mpv\\mpv.exe", "--force-window=immediate", "--fs=no"]'`
 
     Record
-    `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["9:00", "12:00"]}'`
+    `python aiomacmarrum357.py --record --rec-output-dir "C:\\Users\\Mac\\r357" --rec-switch-file-times "9:00" "12:00"`
 
     The above command will record the live stream to files, changing them at the specified times, e.g. when started at 6:00, it will save two files:
     * 2024-09-23,Mon_06.aac - covering 6:00 to 9:00
     * 2024-09-23,Mon_09.aac - covering 9:00 to 12:00
 
     Record to files changed on the hour since the start until midnight, and spawn `aac-to-m4a` after each change
-    `python aiomacmarrum357.py --record='{"output_dir": "C:\\Users\\Mac\\r357", "switch_file_times": ["*:00", "0:00"], "on_file_end": "aac-to-m4a"}'`
+    `python aiomacmarrum357.py --record --rec-output-dir "C:\\Users\\Mac\\r357" --rec-switch-file-times '*:00' "0:00" --rec-on-file-end "aac-to-m4a"`
 
-    Note: The --play= and --record= options use JSON format for their values
+    Note: The --play-with= and --player-args= options use JSON format for their values
 
     Configuration
 
