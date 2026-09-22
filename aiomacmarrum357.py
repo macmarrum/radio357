@@ -283,6 +283,7 @@ class Settings:
     rec_switch_file_times: list[str] | tuple[str, ...] | None = None
     rec_on_file_start: str | Callable | None = None
     rec_on_file_end: str | Callable | None = None
+    rec_offset_bytes: int | None = None
 
     @classmethod
     def from_cli_and_toml(cls, argv: list[str] | None):
@@ -355,6 +356,7 @@ class Settings:
         rec_gr.add_argument('--rec-switch-file-times', nargs='*')
         rec_gr.add_argument('--rec-on-file-start')
         rec_gr.add_argument('--rec-on-file-end')
+        rec_gr.add_argument('--rec-offset-bytes', type=int, help=argparse.SUPPRESS)
         nargs = parser.parse_args(argv)
         cli_options_as_dict_where_value_is_not_none = {k: v for k, v in vars(nargs).items() if v is not None}
         s = Settings(**cli_options_as_dict_where_value_is_not_none)
@@ -463,7 +465,7 @@ class Macmarrum357():
 
     def __init__(self, s: Settings):
         self.s = s
-        self.init_datetime = datetime.now().astimezone()
+        self.client_run_monotonic = None
         macmarrum_log.info('START Macmarrum357')
         self.validate_that_consumers_were_requested(s)
         self.should_log_in = s.log_in is True
@@ -527,6 +529,7 @@ class Macmarrum357():
 
     async def run_client(self):
         self.is_client_running = True
+        self.client_run_monotonic = monotonic()
         self.session = aiohttp.ClientSession(connector=self.mk_connector(), timeout=self.mk_timeout(), cookie_jar=self.mk_cookie_jar())
         if self.should_log_in:
             # await self.init_r357_and_set_cookies_changed_if_needed(macmarrum_log)
@@ -685,7 +688,8 @@ class Macmarrum357():
 
     async def run_recorder(self, output_dir: str | Path = None, filename: str | Callable | None = None, filename_timezone: str | None = None,
                            switch_file_times: SwitchFileTimesType = None,
-                           on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None):
+                           on_file_start: str | Callable | None = None, on_file_end: str | Callable | None = None,
+                           offset_bytes: int | None = None):
         self.filename_tzinfo = ZoneInfo(filename_timezone) if filename_timezone else None
         try:
             queue, q = self.register_stream_consumer_to_get_queue()
@@ -709,9 +713,16 @@ class Macmarrum357():
             recorder_log.critical(f"run_recorder - {type(e).__name__} {e} - queue #{q}")
             raise
         try:
+            skipped_bytes = 0
             while True:
                 chunk = await queue.get()
-                await self.fo.write(chunk)
+                if offset_bytes and skipped_bytes >= offset_bytes:
+                    offset_bytes = None
+                    recorder_log.debug(f"start writing to file — skipped {skipped_bytes:_d} bytes ({skipped_bytes / 16_000:.1f} sec @ 128kbps), which took {monotonic() - self.client_run_monotonic:.1f} sec")
+                if offset_bytes:
+                    skipped_bytes += len(chunk)
+                else:
+                    await self.fo.write(chunk)
                 if end_dt and datetime.now(timezone.utc) >= end_dt:
                     await self.fo.close()
                     self.spawn_on_file_end_if_requested(on_file_end, self.file_path)
