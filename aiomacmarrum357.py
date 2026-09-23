@@ -319,6 +319,7 @@ class Settings:
             s.concurrent_queues_limit = cls.CONCURRENT_QUEUES_LIMIT
         if s.live_stream_location_replacements is None:
             s.live_stream_location_replacements = {cls.REDCDN_LIVE_NO_PREROLL: cls.REDCDN_LIVE_NO_PREROLL + '?preroll=0'}
+        # print(f"settings from_cli_and_toml: { {k: v for k, v in asdict(s).items() if v is not None} }", file=sys.stderr)
         return s
 
     @classmethod
@@ -358,6 +359,7 @@ class Settings:
         nargs = parser.parse_args(argv)
         cli_options_as_dict_where_value_is_not_none = {k: v for k, v in vars(nargs).items() if v is not None}
         s = Settings(**cli_options_as_dict_where_value_is_not_none)
+        # print(f"settings from_cli: { {k: v for k, v in asdict(s).items() if v is not None} }", file=sys.stderr)
         return s
 
     @classmethod
@@ -372,7 +374,9 @@ class Settings:
         if conf.get(c.LOG_IN) and (not conf.get(c.EMAIL) or not conf.get(c.PASSWORD)):
             macmarrum_log.critical(f"{str(toml_path)!r} is missing email and/or password values")
             sys.exit(f"brak email i/lub password w {str(toml_path)!r}")
-        return cls(**conf)
+        s = cls(**conf)
+        # print(f"settings from_toml: { {k: v for k, v in asdict(s).items() if v is not None} }", file=sys.stderr)
+        return s
 
     @classmethod
     def write_minimal_toml(cls, toml_path: Path | None = None):
@@ -1487,6 +1491,8 @@ def main(argv: list[str] = None):
     queue_listener = configure_logging_and_get_listener(settings.logging_toml_path)
     queue_listener.start()
     atexit.register(queue_listener.stop)
+    settings_dict_for_logging = {k: ('*' * len(v) if k in (c.PASSWORD,) else v) for k, v in asdict(settings).items() if v is not None}
+    macmarrum_log.debug(f"settings from_cli_and_toml {settings_dict_for_logging}")
     try:
         sleep_if_requested(settings)
         macmarrum357 = Macmarrum357(settings)
