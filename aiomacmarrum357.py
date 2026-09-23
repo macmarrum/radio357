@@ -454,7 +454,8 @@ class Macmarrum357():
     CONSUMER_CONTENT_TYPE_WAIT_MAX_ITER = 222
     CONSUMER_CONTENT_TYPE_WAIT_SEC = 0.1
     RETRY_AFTER_HEADERS = {c.RETRY_AFTER: '300'}  # note: seconds as string - sent with status code 429
-    QUEUE_EMPTY_TIMEOUT_SEC = 5.0  # when handling a http request, how long to wait for the next chunk before giving up
+    SOCK_READ_TIMEOUT_SEC = 5.0
+    QUEUE_EMPTY_TIMEOUT_SEC = 6 * SOCK_READ_TIMEOUT_SEC  # when handling a http request, how long to wait for the next chunk before giving up
     ITER_FILE_CHUNK_SIZE = 8 * 1024
     aiohttp_cookiejar_pickle_path = app_config_dir_path / 'aiohttp_cookiejar.pickle'
     OUTPUT_FILE_MODE = 'ab'
@@ -667,11 +668,11 @@ class Macmarrum357():
         macmarrum_log.debug(f"mk_connector - use nameservers {nameservers}")
         return connector
 
-    @staticmethod
-    def mk_timeout():
+    @classmethod
+    def mk_timeout(cls):
         # https://github.com/aio-libs/aiohttp/issues/3203
         # https://stackoverflow.com/questions/61199544/dealing-with-aiohttp-session-get-timeout-issues-for-large-amout-of-requests
-        timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=5)
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=cls.SOCK_READ_TIMEOUT_SEC)
         macmarrum_log.debug(f"mk_timeout => {timeout}")
         return timeout
 
