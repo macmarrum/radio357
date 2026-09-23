@@ -297,8 +297,6 @@ class Settings:
             s.logging_toml_path = cls.LOGGING_TOML_PATH
         if s.live_stream_url is None:
             s.live_stream_url = cls.LIVE_STREAM_URL
-        if s.log_in is None and s.email and s.password:
-            s.log_in = cls.LOG_IN
         if s.icy_title is None:
             s.icy_title = cls.ICY_TITLE
         if s.host is None:
@@ -330,7 +328,7 @@ class Settings:
         parser.add_argument('--logging-toml-path', type=path_expanduser, help='Path to logging.toml; <app-config-dir>/logging.toml by default')
         parser.add_argument('--sleep', type=float, help='Sleep SECONDS before connecting to the live-stream server')
         parser.add_argument('--live-stream-url')
-        parser.add_argument('--log-in', action='store_true', default=None, help='True by default if email and password are given')
+        parser.add_argument('--log-in', action='store_true', default=None)
         parser.add_argument('--email')
         parser.add_argument('--password')
         parser.add_argument('--user-agent')
