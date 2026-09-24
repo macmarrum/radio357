@@ -256,7 +256,7 @@ class Settings:
     config_toml_path: Path | None = None
     logging_toml_path: Path | None = None
     sleep: float | None = None
-    live_stream_url: str | None = None
+    live_stream_url: list[str] | tuple[str, ...] | None = None
     log_in: bool | None = None
     email: str | None = None
     password: str | None = None
@@ -296,7 +296,7 @@ class Settings:
         if s.logging_toml_path is None:
             s.logging_toml_path = cls.LOGGING_TOML_PATH
         if s.live_stream_url is None:
-            s.live_stream_url = cls.LIVE_STREAM_URL
+            s.live_stream_url = (cls.LIVE_STREAM_URL,)
         if s.icy_title is None:
             s.icy_title = cls.ICY_TITLE
         if s.host is None:
@@ -328,7 +328,7 @@ class Settings:
         parser.add_argument('-c', '--config-toml-path', type=path_expanduser, help='Path to config.toml; <app-config-dir>/config.toml by default, where <app-config-dir> is %%APPDATA%%/macmarrum357 on Windows and $XDG_CONFIG_DIR/macmarrum357 on POSIX ($XDG_CONFIG_DIR is $HOME/.config if not set)')
         parser.add_argument('--logging-toml-path', type=path_expanduser, help='Path to logging.toml; <app-config-dir>/logging.toml by default')
         parser.add_argument('--sleep', type=float, help='Sleep SECONDS before connecting to the live-stream server')
-        parser.add_argument('--live-stream-url')
+        parser.add_argument('--live-stream-url', nargs='+', help='One primary and, optionally, one secondary URL – used at connection attempts 4 and 5')
         parser.add_argument('--log-in', action='store_true', default=None)
         parser.add_argument('--email')
         parser.add_argument('--password')
@@ -406,6 +406,22 @@ class Settings:
         return rec_kwargs
 
 
+class FallbackChain:
+    """A wrapper around a sequence of one or two elements, with `secondary` falling back to `primary` for one-element sequences"""
+    def __init__(self, sequence: list[str] | tuple[str, ...]):
+        if len(sequence) not in (1, 2):
+            raise ValueError('invalid sequence size - expected 1 or 2 elements')
+        self._sequence = sequence
+
+    @property
+    def primary(self):
+        return self._sequence[0]
+
+    @property
+    def secondary(self):
+        return self._sequence[1 if len(self._sequence) > 1 else 0]
+
+
 class Macmarrum357():
     r"""
     This software allows you to:
@@ -468,6 +484,7 @@ class Macmarrum357():
 
     def __init__(self, s: Settings):
         self.s = s
+        self.live_stream_url_chain = FallbackChain(s.live_stream_url)
         self.client_run_monotonic = None
         macmarrum_log.info('START Macmarrum357')
         self.validate_that_consumers_were_requested(s)
@@ -547,7 +564,12 @@ class Macmarrum357():
         if self.s.icy_title:
             headers |= {c.ICY_METADATA: '1'}
         while True:
-            url = self.s.live_stream_url
+            if i <= 3:
+                url = self.live_stream_url_chain.primary
+            elif 4 <= i <= 5:
+                url = self.live_stream_url_chain.secondary
+            elif i >= 6:
+                url = self.live_stream_url_chain.primary
             try:
                 macmarrum_log.debug(f"GET {url} - {headers}")
                 while True:  # handle redirects
