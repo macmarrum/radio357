@@ -297,8 +297,6 @@ class Settings:
             s.logging_toml_path = cls.LOGGING_TOML_PATH
         if s.live_stream_url is None:
             s.live_stream_url = (cls.LIVE_STREAM_URL,)
-        if s.icy_title is None:
-            s.icy_title = cls.ICY_TITLE
         if s.host is None:
             s.host = cls.HOST
         if s.port is None:
