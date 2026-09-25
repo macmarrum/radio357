@@ -254,7 +254,7 @@ class Settings:
     CONCURRENT_QUEUES_LIMIT: ClassVar[int] = 1_000  # limit on the number of concurrent consumers, post which status code 429 is sent
     REDCDN_LIVE_NO_PREROLL: ClassVar[str] = 'https://r.dcs.redcdn.pl/sc/o2/radio357/live/radio357_pr.livx'
     config_toml_path: Path | None = None
-    logging_toml_path: Path | None = None
+    logging_toml_path: str | Path | None = None
     sleep: float | None = None
     live_stream_url: str | list[str] | tuple[str, ...] | None = None
     log_in: bool | None = None
@@ -274,10 +274,10 @@ class Settings:
     queue0_byte_size_limit: int | None = None
     queue_byte_size_limit: int | None = None
     concurrent_queues_limit: int | None = None
-    chunk_info_collector_filename: str | None = None
+    chunk_info_collector_filename: str | Path | None = None
     live_stream_location_replacements: dict[str, str] | None = None
     record: bool | None = None
-    rec_output_dir: Path | None = None
+    rec_output_dir: str | Path | None = None
     rec_filename: str | Callable | None = None
     rec_filename_timezone: str | None = None
     rec_switch_file_times: list[str] | tuple[str, ...] | None = None
@@ -323,8 +323,8 @@ class Settings:
     @classmethod
     def from_cli(cls, argv: list[str] | None) -> Settings:
         parser = argparse.ArgumentParser()
-        parser.add_argument('-c', '--config-toml-path', type=path_expanduser, help='Path to config.toml; <app-config-dir>/config.toml by default, where <app-config-dir> is %%APPDATA%%/macmarrum357 on Windows and $XDG_CONFIG_DIR/macmarrum357 on POSIX ($XDG_CONFIG_DIR is $HOME/.config if not set)')
-        parser.add_argument('--logging-toml-path', type=path_expanduser, help='Path to logging.toml; <config-toml-path.parent>/logging.toml by default')
+        parser.add_argument('-c', '--config-toml-path', type=path_template, help='Path to config.toml; <app-config-dir>/config.toml by default, where <app-config-dir> is %%APPDATA%%/macmarrum357 on Windows and $XDG_CONFIG_DIR/macmarrum357 on POSIX ($XDG_CONFIG_DIR is $HOME/.config if not set)')
+        parser.add_argument('--logging-toml-path', type=path_template, help='Path to logging.toml; {config-toml-path.parent}/logging.toml by default')
         parser.add_argument('--sleep', type=float, help='Sleep SECONDS before connecting to the live-stream server')
         parser.add_argument('--live-stream-url', nargs='+', help='One primary and, optionally, one secondary URL – used at connection attempts 4 and 5')
         parser.add_argument('--log-in', action='store_true', default=None)
@@ -344,10 +344,10 @@ class Settings:
         parser.add_argument('--queue0-byte-size-limit', type=int, help=argparse.SUPPRESS)
         parser.add_argument('--queue-byte-size-limit', type=int, help=argparse.SUPPRESS)
         parser.add_argument('--concurrent-queues-limit', type=int, help=argparse.SUPPRESS)
-        parser.add_argument('--chunk-info-collector-filename', type=path_expanduser, help=argparse.SUPPRESS)
+        parser.add_argument('--chunk-info-collector-filename', type=path_template, help=argparse.SUPPRESS)
         parser.add_argument('--record', action='store_true', default=None, help='Run recorder')
         rec_gr = parser.add_argument_group('recording options')
-        rec_gr.add_argument('--rec-output-dir', type=path_expanduser)
+        rec_gr.add_argument('--rec-output-dir', type=path_template)
         rec_gr.add_argument('--rec-filename', help='By default constructed dynamically for each file as f"{start.strftime(\'%%Y-%%m-%%d,%%a_%%H\')}{suffix}"')
         rec_gr.add_argument('--rec-filename-timezone', help='Convert time to this timezone in the (default) filename')
         rec_gr.add_argument('--rec-switch-file-times', nargs='*')
@@ -395,6 +395,9 @@ class Settings:
             self.play = True
         if isinstance(self.live_stream_url, str):
             self.live_stream_url = (self.live_stream_url,)
+        for name in ('logging_toml_path', 'chunk_info_collector_filename', 'rec_output_dir'):
+            if isinstance(value := getattr(self, name), str):
+                setattr(self, name, path_template(value))
 
     @property
     def recorder_kwargs(self):
@@ -1500,8 +1503,8 @@ def web_log_info_splitlines(message: str):
         web_log.info(line)
 
 
-def path_expanduser(path: str) -> Path:
-    return Path(path).expanduser()
+def path_template(filename: str) -> Path:
+    return Path(Template(filename).substitute()).expanduser()
 
 
 def main(argv: list[str] = None):
