@@ -256,7 +256,7 @@ class Settings:
     config_toml_path: Path | None = None
     logging_toml_path: Path | None = None
     sleep: float | None = None
-    live_stream_url: list[str] | tuple[str, ...] | None = None
+    live_stream_url: str | list[str] | tuple[str, ...] | None = None
     log_in: bool | None = None
     email: str | None = None
     password: str | None = None
@@ -393,6 +393,8 @@ class Settings:
         if self.play_with:
             self.player_args = self.play_with
             self.play = True
+        if isinstance(self.live_stream_url, str):
+            self.live_stream_url = (self.live_stream_url,)
 
     @property
     def recorder_kwargs(self):
