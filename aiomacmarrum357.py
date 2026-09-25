@@ -234,7 +234,7 @@ class c:
 @dataclass
 class Settings:
     CONFIG_TOML_PATH: ClassVar[Path] = app_config_dir_path / 'config.toml'
-    LOGGING_TOML_PATH: ClassVar[Path] = app_config_dir_path / 'logging.toml'
+    LOGGING_TOML_NAME: ClassVar[str] = 'logging.toml'
     LIVE_STREAM_URL: ClassVar[str] = 'https://stream.radio357.pl/?s=www'
     LOG_IN: ClassVar[bool] = True
     EMAIL: ClassVar[str] = ''
@@ -290,11 +290,11 @@ class Settings:
         settings_from_cli = cls.from_cli(argv)
         if settings_from_cli.config_toml_path in (None, cls.CONFIG_TOML_PATH) and not cls.CONFIG_TOML_PATH.exists():
             cls.write_minimal_toml()
-        settings_from_toml = cls.from_toml_path(settings_from_cli.config_toml_path or cls.CONFIG_TOML_PATH)
+        settings_from_toml = cls.from_toml_path(config_toml_path := settings_from_cli.config_toml_path or cls.CONFIG_TOML_PATH)
         dict_from_cli_where_value_is_not_none = {k: v for k, v in asdict(settings_from_cli).items() if v is not None}
         s = dataclasses.replace(settings_from_toml, **dict_from_cli_where_value_is_not_none)
         if s.logging_toml_path is None:
-            s.logging_toml_path = cls.LOGGING_TOML_PATH
+            s.logging_toml_path = config_toml_path.parent / cls.LOGGING_TOML_NAME
         if s.live_stream_url is None:
             s.live_stream_url = (cls.LIVE_STREAM_URL,)
         if s.host is None:
@@ -324,7 +324,7 @@ class Settings:
     def from_cli(cls, argv: list[str] | None) -> Settings:
         parser = argparse.ArgumentParser()
         parser.add_argument('-c', '--config-toml-path', type=path_expanduser, help='Path to config.toml; <app-config-dir>/config.toml by default, where <app-config-dir> is %%APPDATA%%/macmarrum357 on Windows and $XDG_CONFIG_DIR/macmarrum357 on POSIX ($XDG_CONFIG_DIR is $HOME/.config if not set)')
-        parser.add_argument('--logging-toml-path', type=path_expanduser, help='Path to logging.toml; <app-config-dir>/logging.toml by default')
+        parser.add_argument('--logging-toml-path', type=path_expanduser, help='Path to logging.toml; <config-toml-path.parent>/logging.toml by default')
         parser.add_argument('--sleep', type=float, help='Sleep SECONDS before connecting to the live-stream server')
         parser.add_argument('--live-stream-url', nargs='+', help='One primary and, optionally, one secondary URL – used at connection attempts 4 and 5')
         parser.add_argument('--log-in', action='store_true', default=None)
