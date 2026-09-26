@@ -28,7 +28,6 @@ try:
     import tomllib
 except ImportError:
     import tomli as tomllib
-import traceback
 from collections.abc import Iterator
 from datetime import datetime, timezone, timedelta
 from http.cookies import SimpleCookie
@@ -641,7 +640,7 @@ class Macmarrum357():
                     sec = 3600  # after 6h since error, every 1h
                 macmarrum_log.error(f"{type(e).__name__}: {e} - chunk #{chunk_num}")
                 if i == 1 or sec >= 600:
-                    macmarrum_log.error(traceback.format_exc())
+                    macmarrum_log.debug('', exc_info=True)
                 if sec:
                     macmarrum_log.debug(f"sleep {sec} sec before retrying")
                     await asyncio.sleep(sec)
